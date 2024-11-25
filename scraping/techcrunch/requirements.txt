@@ -1,0 +1,11 @@
+duckduckgo-search
+langchain
+langchain-openai
+langchain-community
+html2text
+beautifulsoup4
+openai
+python-dotenv
+colorama
+wikipedia
+langchain-ollama
