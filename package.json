@@ -1,0 +1,36 @@
+{
+  "name": "project-lazarus",
+  "version": "1.0.0",
+  "description": "Turn scraped TechCrunch articles into a structured dataset of climate-tech startups using LLMs",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "step0": "tsx src/steps/step0-scrape.ts",
+    "step1": "tsx src/steps/step1-extract-company.ts",
+    "step2": "tsx src/steps/step2-add-funding.ts",
+    "step3": "tsx src/steps/step3-cleanup-funding.ts",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check src",
+    "format": "biome format --write src"
+  },
+  "dependencies": {
+    "@langchain/community": "^0.3.0",
+    "@langchain/core": "^0.3.0",
+    "@langchain/ollama": "^0.2.0",
+    "@langchain/openai": "^0.4.0",
+    "cheerio": "^1.0.0",
+    "csv-parse": "^5.5.0",
+    "csv-stringify": "^6.5.0",
+    "dotenv": "^16.4.0",
+    "langchain": "^0.3.0",
+    "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^1.9.0",
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  }
+}

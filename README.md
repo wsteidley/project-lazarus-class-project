@@ -24,9 +24,78 @@ Scraped, Unstructured Data -> AI Agent Stages -> Structured Data
 
 ## Overview
 
-The scripts are labeled step0, step1, step2, and step3 to make it clear the order. They are not perfect as it depends on the output from the AI agents and sometimes the formatting can be incorrect. `response_format.py` contains various types of formats to try but depending on the need, the ChatGPT 4o models have worked best.
+The pipeline runs in four ordered stages — step0, step1, step2, step3. The
+current, maintained implementation is the **TypeScript** version under `src/`
+(see below). The original Python scripts under `scraping/techcrunch/` are kept as
+legacy reference.
 
-There are multiple step1 and step2 articles. You don't need to run them all they are just different approaches typically using chatgpt vs llama or a different kind of agent.
+The stages are:
+
+- **step0** — scrape a TechCrunch listing page into an article index, then scrape
+  each full article. Outputs `techcrunch_article_<ts>_data.csv`.
+- **step1** — extract structured company info from each article with an LLM,
+  optionally enriched with Crunchbase. Outputs `parsed_data_<ts>.csv`.
+- **step2** — enrich each company with funding-round data using web search
+  (DuckDuckGo + Wikipedia) plus the LLM. Outputs `added_funding_data_<ts>.csv`.
+- **step3** — deterministic (no LLM) cleanup: standardize round names and dates,
+  de-duplicate rounds per company. Outputs `standardized_funding_<ts>.csv` and a
+  `..._amount_by_year.json` sidecar (replaces the old matplotlib/plotly plot).
+
+## TypeScript (src/)
+
+The `src/` project is Node + TypeScript. It replaces `requests`/BeautifulSoup with
+`fetch`/cheerio, pandas with `csv-parse`/`csv-stringify`, and the fragile custom
+LangChain output parsers with LangChain.js `withStructuredOutput` + Zod schemas so
+the LLM returns validated JSON. There is one file per step; the model provider is
+a config switch rather than a separate script.
+
+### Setup
+
+Requires Node 20+.
+
+```
+$ npm install
+$ cp .env.example .env   # then fill in the values you need
+```
+
+Environment variables (see `.env.example`):
+
+- `PROVIDER` — `openai` (default) or `ollama`
+- `OPENAI_API_KEY` — when `PROVIDER=openai`
+- `LLAMA_BASE_URL` — when `PROVIDER=ollama`, e.g. `http://localhost:11434`
+- `CRUNCHBASE_API_KEY` — optional, enables Crunchbase enrichment in step1
+- `SCRAPE_URL` — the TechCrunch listing URL for step0
+- `INPUT_FILE` — the input CSV for step1/step2/step3 (output of the prior step)
+- `PROCESSING_LIMIT` (default 10), `BATCH_SIZE` (default 5) — optional tuning
+
+### Running the pipeline
+
+```
+$ SCRAPE_URL=https://techcrunch.com/tag/climate npm run step0
+$ INPUT_FILE=techcrunch_article_<ts>_data.csv       npm run step1
+$ INPUT_FILE=parsed_data_<ts>.csv                   npm run step2
+$ INPUT_FILE=added_funding_data_<ts>.csv            npm run step3
+```
+
+Switch providers by setting `PROVIDER=ollama` (runs locally, no rate limits).
+
+### Lint / typecheck
+
+Biome is the formatter and linter; `tsc` is the typechecker.
+
+```
+$ npm run typecheck
+$ npm run lint     # biome check
+$ npm run format   # biome format --write
+```
+
+## Legacy Python
+
+The sections below describe the original Python scripts under
+`scraping/techcrunch/`. They are labeled step0–step3 in the same order. There are
+multiple step1 and step2 variants (chatgpt vs llama, different agent styles) — you
+don't need to run them all. `response_format.py` holds the schema variants;
+ChatGPT 4o models worked best.
 
 ## Setup
 
