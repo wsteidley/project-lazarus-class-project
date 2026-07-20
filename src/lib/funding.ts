@@ -1,25 +1,30 @@
-import { fundingRoundNames } from '../schemas.js'
+import { ROUND } from '../schemas.js'
 
-export type RawFundingRound = {
-  currency_symbol?: string | null
-  round_name?: string | null
-  amount?: number | null
-  date?: string | null
-  // The model sometimes emits schema-shaped junk objects; these mark them.
-  type?: unknown
-  properties?: unknown
-}
-
-export type StandardizedFundingRound = {
+// A funding_rounds.csv row, as read back (all cells are strings).
+export type FundingCsvRow = {
+  company_uuid: string
   round_name: string
-  currency_symbol?: string | null
-  amount: number
-  date: string | null
+  amount: string
+  currency: string
+  round_date: string
+  round_year: string
+  source_url: string
 }
 
-// Maps a loosely-worded round name onto the controlled vocabulary, or "Unknown".
+// A deduped, standardized funding round ready to write back.
+export type StandardizedFundingRow = {
+  company_uuid: string
+  round_name: string
+  amount: number
+  currency: string
+  round_date: string
+  round_year: number | ''
+  source_url: string
+}
+
+// Maps a loosely-worded round name onto the controlled ROUND vocabulary, or "Unknown".
 export const fixRoundName = (currentName: string | null | undefined): string => {
-  for (const name of fundingRoundNames) {
+  for (const name of ROUND) {
     if (currentName?.toLowerCase().includes(name.toLowerCase())) {
       return name
     }
@@ -27,31 +32,34 @@ export const fixRoundName = (currentName: string | null | undefined): string => 
   return 'Unknown'
 }
 
-// Parses many date shapes into MM/YY, or null if nothing matches. Mirrors the
-// regex ladder in standardize_date from step3_cleanup_funding_data.py.
+// Parses many date shapes into YYYY-MM, preserving the 4-digit year (the fix for
+// the old MM/YY century bug). Returns null if nothing matches. A 2-digit input
+// year is assumed to be 20xx as a last resort; step2 asks for 4-digit years.
 export const standardizeDate = (input: string | null | undefined): string | null => {
   if (input === null || input === undefined) {
     return null
   }
   const dateString = String(input).trim()
+  if (!dateString) {
+    return null
+  }
   const pad = (value: string): string => value.padStart(2, '0')
-  // Captured groups are guaranteed present once a pattern matches, but
-  // noUncheckedIndexedAccess types them as possibly-undefined, so read safely.
+  const fourDigitYear = (year: string): string => (year.length === 2 ? `20${year}` : year)
   const cap = (match: RegExpMatchArray, index: number): string => match[index] ?? ''
 
   const attempts: [RegExp, (match: RegExpMatchArray) => string][] = [
-    // MM/YY or MM/YYYY
-    [/^(\d{1,2})[/.-](\d{2}(?:\d{2})?)$/, (m) => `${pad(cap(m, 1))}/${cap(m, 2).slice(-2)}`],
+    // YYYY-MM-DD / YYYY/MM/DD
+    [/^(\d{4})[/.-](\d{1,2})[/.-]\d{1,2}$/, (m) => `${cap(m, 1)}-${pad(cap(m, 2))}`],
+    // YYYY-MM / YYYY/MM
+    [/^(\d{4})[/.-](\d{1,2})$/, (m) => `${cap(m, 1)}-${pad(cap(m, 2))}`],
     // YYYY only
-    [/^(\d{4})$/, (m) => `01/${cap(m, 1).slice(-2)}`],
-    // YYYY-MM
-    [/^(\d{4})[/.-](\d{1,2})$/, (m) => `${pad(cap(m, 2))}/${cap(m, 1).slice(-2)}`],
-    // YY/MM or YY-MM
-    [/^(\d{2})[/.-](\d{1,2})$/, (m) => `${pad(cap(m, 2))}/${cap(m, 1)}`],
-    // MM/DD/YYYY or MM-DD-YYYY
-    [/^(\d{1,2})[/.-](\d{1,2})[/.-](\d{4})$/, (m) => `${pad(cap(m, 1))}/${cap(m, 3).slice(-2)}`],
-    // YYYY-MM-DD
-    [/^(\d{4})[/.-](\d{1,2})[/.-](\d{1,2})$/, (m) => `${pad(cap(m, 2))}/${cap(m, 1).slice(-2)}`],
+    [/^(\d{4})$/, (m) => `${cap(m, 1)}-01`],
+    // MM/DD/YYYY
+    [/^(\d{1,2})[/.-]\d{1,2}[/.-](\d{4})$/, (m) => `${cap(m, 2)}-${pad(cap(m, 1))}`],
+    // MM/YYYY
+    [/^(\d{1,2})[/.-](\d{4})$/, (m) => `${cap(m, 2)}-${pad(cap(m, 1))}`],
+    // MM/YY (best-effort century)
+    [/^(\d{1,2})[/.-](\d{2})$/, (m) => `${fourDigitYear(cap(m, 2))}-${pad(cap(m, 1))}`],
   ]
 
   for (const [pattern, formatter] of attempts) {
@@ -61,92 +69,62 @@ export const standardizeDate = (input: string | null | undefined): string | null
     }
   }
 
-  // Textual dates like "March 3, 2020" or "March 3 2020".
-  const textualMatch = dateString.match(/^(\w+)\s+(\d{1,2}),?\s+(\d{4})$/)
-  if (textualMatch) {
-    const parsed = new Date(`${textualMatch[1]} ${textualMatch[2]}, ${textualMatch[3]}`)
-    if (!Number.isNaN(parsed.getTime())) {
-      return `${pad(String(parsed.getMonth() + 1))}/${String(parsed.getFullYear()).slice(-2)}`
-    }
-  }
-
-  // Last resort: ISO / Date-parseable strings.
-  const isoParsed = new Date(dateString)
-  if (!Number.isNaN(isoParsed.getTime())) {
-    return `${pad(String(isoParsed.getMonth() + 1))}/${String(isoParsed.getFullYear()).slice(-2)}`
+  // Textual dates like "March 3, 2020" or "March 2020".
+  const textual = new Date(dateString)
+  if (!Number.isNaN(textual.getTime()) && /\d{4}/.test(dateString)) {
+    return `${textual.getFullYear()}-${pad(String(textual.getMonth() + 1))}`
   }
 
   return null
 }
 
-// Normalizes round names and drops schema-junk objects. Mirrors check_round_names.
-const normalizeRoundNames = (fundingStrings: string[]): RawFundingRound[][] =>
-  fundingStrings.map((fundingString) => {
-    const rounds = JSON.parse(fundingString) as RawFundingRound[]
-    const cleaned: RawFundingRound[] = []
-    for (const round of rounds) {
-      if (round.type && round.properties) {
-        continue
-      }
-      let roundName = round.round_name
-      if (!roundName || !fundingRoundNames.includes(roundName)) {
-        roundName = fixRoundName(roundName)
-      }
-      cleaned.push({ ...round, round_name: roundName })
-    }
-    return cleaned
-  })
-
-// De-duplicates rounds per round_name, keeping the largest amount and a
-// standardized date. Mirrors standardize_funding_data.
-export const standardizeFundingData = (fundingStrings: string[]): StandardizedFundingRound[] => {
-  const normalized = normalizeRoundNames(fundingStrings)
-  const byRoundName = new Map<string, StandardizedFundingRound>()
-
-  for (const roundList of normalized) {
-    for (const round of roundList) {
-      const roundName = round.round_name as string
-      const existing = byRoundName.get(roundName) ?? {
-        round_name: roundName,
-        amount: 0,
-        date: null,
-      }
-
-      if (existing.currency_symbol == null && round.currency_symbol != null) {
-        existing.currency_symbol = round.currency_symbol
-      }
-      if (existing.date == null && round.date != null) {
-        existing.date = standardizeDate(round.date)
-      }
-      const incomingAmount = typeof round.amount === 'number' ? round.amount : 0
-      existing.amount = Math.trunc(Math.max(incomingAmount, existing.amount))
-      existing.round_name = roundName
-
-      if (existing.date != null) {
-        byRoundName.set(roundName, existing)
-      }
-    }
+export const yearFromStandardizedDate = (date: string | null): number | '' => {
+  if (!date) {
+    return ''
   }
-
-  return [...byRoundName.values()]
+  const match = date.match(/^(\d{4})/)
+  return match?.[1] ? Number(match[1]) : ''
 }
 
-// Aggregates standardized rounds into total amount per four-digit year, for the
-// JSON sidecar that replaces the Python matplotlib/plotly plot.
-export const aggregateAmountByYear = (
-  rounds: StandardizedFundingRound[],
-): Record<string, number> => {
-  const byYear: Record<string, number> = {}
-  for (const round of rounds) {
-    if (!round.date) {
-      continue
+const parseAmount = (raw: string): number => {
+  const parsed = Number(raw)
+  return Number.isFinite(parsed) ? Math.trunc(parsed) : 0
+}
+
+// De-duplicates funding rows per (company_uuid, round_name): keeps the largest
+// amount, a standardized date, currency, and derived 4-digit round_year. Replaces
+// the old JSON-blob reconciliation.
+export const dedupeFundingRows = (rows: FundingCsvRow[]): StandardizedFundingRow[] => {
+  const byKey = new Map<string, StandardizedFundingRow>()
+
+  for (const row of rows) {
+    const roundName =
+      row.round_name && ROUND.includes(row.round_name as (typeof ROUND)[number])
+        ? row.round_name
+        : fixRoundName(row.round_name)
+    const key = `${row.company_uuid}::${roundName}`
+    const standardizedDate = standardizeDate(row.round_date)
+
+    const existing = byKey.get(key) ?? {
+      company_uuid: row.company_uuid,
+      round_name: roundName,
+      amount: 0,
+      currency: '',
+      round_date: '',
+      round_year: '' as number | '',
+      source_url: row.source_url,
     }
-    const yearSuffix = round.date.split('/')[1]
-    if (!yearSuffix) {
-      continue
+
+    existing.amount = Math.max(existing.amount, parseAmount(row.amount))
+    if (!existing.currency && row.currency) {
+      existing.currency = row.currency
     }
-    const fullYear = `20${yearSuffix}`
-    byYear[fullYear] = (byYear[fullYear] ?? 0) + round.amount
+    if (!existing.round_date && standardizedDate) {
+      existing.round_date = standardizedDate
+      existing.round_year = yearFromStandardizedDate(standardizedDate)
+    }
+    byKey.set(key, existing)
   }
-  return byYear
+
+  return [...byKey.values()]
 }

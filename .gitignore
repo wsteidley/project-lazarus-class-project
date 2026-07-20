@@ -16,8 +16,8 @@ downloads/
 eggs/
 .eggs/
 # Anchored to repo root so these Python packaging dirs don't also match src/lib/
-/lib/
-/lib64/
+scraping/lib/
+scraping/lib64/
 parts/
 sdist/
 var/
@@ -171,3 +171,7 @@ npm-debug.log*
 
 # Pipeline output
 *.csv
+
+# Built SQLite database
+lazarus.db
+*.db

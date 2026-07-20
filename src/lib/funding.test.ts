@@ -1,39 +1,48 @@
 import { describe, expect, it } from 'vitest'
 import {
-  aggregateAmountByYear,
+  dedupeFundingRows,
+  type FundingCsvRow,
   fixRoundName,
   standardizeDate,
-  standardizeFundingData,
+  yearFromStandardizedDate,
 } from './funding.js'
 
 describe('standardizeDate', () => {
   const cases: [string, string | null][] = [
-    ['3/2020', '03/20'],
-    ['11/19', '11/19'],
-    ['2021', '01/21'],
-    ['2020-07', '07/20'],
-    ['20-7', '07/20'],
-    ['03/15/2019', '03/19'],
-    ['2018-05-09', '05/18'],
-    ['March 3, 2020', '03/20'],
-    ['June 12 2022', '06/22'],
+    ['2020-03', '2020-03'],
+    ['2020/3', '2020-03'],
+    ['2018-05-09', '2018-05'],
+    ['3/2020', '2020-03'],
+    ['03/15/2019', '2019-03'],
+    ['2021', '2021-01'],
+    ['11/19', '2019-11'],
+    ['March 3, 2020', '2020-03'],
     ['not a date', null],
+    ['', null],
   ]
 
   it.each(cases)('parses %s -> %s', (input, expected) => {
     expect(standardizeDate(input)).toBe(expected)
   })
 
-  it('returns null for null/undefined', () => {
+  it('preserves the 4-digit year (no century collapse)', () => {
+    expect(standardizeDate('1998-07')).toBe('1998-07')
     expect(standardizeDate(null)).toBeNull()
-    expect(standardizeDate(undefined)).toBeNull()
+  })
+})
+
+describe('yearFromStandardizedDate', () => {
+  it('derives a 4-digit integer year', () => {
+    expect(yearFromStandardizedDate('2020-03')).toBe(2020)
+    expect(yearFromStandardizedDate(null)).toBe('')
   })
 })
 
 describe('fixRoundName', () => {
-  it('maps loose names onto the controlled vocabulary', () => {
+  it('maps loose names onto the ROUND vocabulary', () => {
     expect(fixRoundName('a seed round')).toBe('Seed')
     expect(fixRoundName('Series A extension')).toBe('Series A')
+    expect(fixRoundName('government grant award')).toBe('Grant')
   })
 
   it('falls back to Unknown', () => {
@@ -42,34 +51,57 @@ describe('fixRoundName', () => {
   })
 })
 
-describe('standardizeFundingData', () => {
-  it('de-dupes rounds per name keeping the larger amount, standardizes dates, drops schema junk', () => {
-    const input = [
-      JSON.stringify([
-        { round_name: 'Seed', amount: 1_000_000, date: '2019-05', currency_symbol: '$' },
-        { round_name: 'seed round', amount: 1_500_000, date: '06/2019' },
-        { round_name: 'Series A', amount: 5_000_000, date: 'March 3, 2021' },
-        { type: 'object', properties: {} },
-      ]),
+describe('dedupeFundingRows', () => {
+  it('de-dupes per company + round, keeps max amount and a standardized date', () => {
+    const rows: FundingCsvRow[] = [
+      {
+        company_uuid: 'c1',
+        round_name: 'Seed',
+        amount: '1000000',
+        currency: 'USD',
+        round_date: '2019-05',
+        round_year: '2019',
+        source_url: 'http://x/1',
+      },
+      {
+        company_uuid: 'c1',
+        round_name: 'Seed',
+        amount: '1500000',
+        currency: '',
+        round_date: '06/2019',
+        round_year: '',
+        source_url: 'http://x/1',
+      },
+      {
+        company_uuid: 'c1',
+        round_name: 'Series A',
+        amount: '5000000',
+        currency: 'USD',
+        round_date: 'March 3, 2021',
+        round_year: '',
+        source_url: 'http://x/1',
+      },
     ]
 
-    expect(standardizeFundingData(input)).toEqual([
-      { round_name: 'Seed', amount: 1_500_000, date: '05/19', currency_symbol: '$' },
-      { round_name: 'Series A', amount: 5_000_000, date: '03/21' },
+    expect(dedupeFundingRows(rows)).toEqual([
+      {
+        company_uuid: 'c1',
+        round_name: 'Seed',
+        amount: 1_500_000,
+        currency: 'USD',
+        round_date: '2019-05',
+        round_year: 2019,
+        source_url: 'http://x/1',
+      },
+      {
+        company_uuid: 'c1',
+        round_name: 'Series A',
+        amount: 5_000_000,
+        currency: 'USD',
+        round_date: '2021-03',
+        round_year: 2021,
+        source_url: 'http://x/1',
+      },
     ])
-  })
-})
-
-describe('aggregateAmountByYear', () => {
-  it('rolls up amounts per four-digit year', () => {
-    const rounds = [
-      { round_name: 'Seed', amount: 1_500_000, date: '05/19' },
-      { round_name: 'Series A', amount: 5_000_000, date: '03/21' },
-      { round_name: 'Series B', amount: 500_000, date: '11/21' },
-    ]
-    expect(aggregateAmountByYear(rounds)).toEqual({
-      '2019': 1_500_000,
-      '2021': 5_500_000,
-    })
   })
 })

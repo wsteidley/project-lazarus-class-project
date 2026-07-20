@@ -24,22 +24,34 @@ Scraped, Unstructured Data -> AI Agent Stages -> Structured Data
 
 ## Overview
 
-The pipeline runs in four ordered stages — step0, step1, step2, step3. The
-current, maintained implementation is the **TypeScript** version under `src/`
-(see below). The original Python scripts under `scraping/techcrunch/` are kept as
-legacy reference.
+The pipeline is a sequence of stages, maintained as the **TypeScript** version
+under `src/` (see below). The original Python scripts under `scraping/techcrunch/`
+are kept as legacy reference. The output is a small **relational** dataset — one
+CSV per table in `DATA_DIR` (default `./data`), loaded into a single-file SQLite
+database (`lazarus.db`) — as specified in
+[dataset-schema-spec.md](dataset-schema-spec.md).
 
 The stages are:
 
 - **step0** — scrape a TechCrunch listing page into an article index, then scrape
-  each full article. Outputs `techcrunch_article_<ts>_data.csv`.
-- **step1** — extract structured company info from each article with an LLM,
-  optionally enriched with Crunchbase. Outputs `parsed_data_<ts>.csv`.
-- **step2** — enrich each company with funding-round data using web search
-  (DuckDuckGo + Wikipedia) plus the LLM. Outputs `added_funding_data_<ts>.csv`.
-- **step3** — deterministic (no LLM) cleanup: standardize round names and dates,
-  de-duplicate rounds per company. Outputs `standardized_funding_<ts>.csv` and a
-  `..._amount_by_year.json` sidecar (replaces the old matplotlib/plotly plot).
+  each full article. Outputs `techcrunch_article_<ts>_data.csv` (raw input).
+- **step1** — extract structured company info from each article with an LLM
+  (optionally Crunchbase-enriched). Writes `data/companies.csv` +
+  `data/failure_reasons.csv`.
+- **step1b** — a separate LLM pass decomposing each idea into its dependencies.
+  Writes `data/idea_dependencies.csv`.
+- **step2** — find funding-round data per company via web search (DuckDuckGo +
+  Wikipedia) + the LLM, one row per round. Writes `data/funding_rounds.csv`.
+- **step3** — deterministic (no LLM) cleanup: standardize dates to `YYYY-MM`
+  (4-digit year, no century guessing), derive `round_year`, de-duplicate rounds
+  per company + round name. Rewrites `data/funding_rounds.csv` in place.
+- **build** — load the table CSVs into `lazarus.db` (SQLite via Node's built-in
+  `node:sqlite`), assigning integer PKs and resolving `company_uuid` foreign keys.
+
+Controlled-vocabulary fields (sector, round, failure/dependency category, etc.) are
+enforced by Zod enums in [src/schemas.ts](src/schemas.ts) and mirrored as DB `CHECK`
+constraints. The reassessment axis (step4 / `dependency_assessments`, `current_trl`)
+is specced but not yet implemented.
 
 ## TypeScript (src/)
 
@@ -51,7 +63,7 @@ a config switch rather than a separate script.
 
 ### Setup
 
-Requires Node 20+.
+Requires Node 20+ (the `build` step uses `node:sqlite`, available in Node 22.5+).
 
 ```
 $ npm install
@@ -65,19 +77,27 @@ Environment variables (see `.env.example`):
 - `LLAMA_BASE_URL` — when `PROVIDER=ollama`, e.g. `http://localhost:11434`
 - `CRUNCHBASE_API_KEY` — optional, enables Crunchbase enrichment in step1
 - `SCRAPE_URL` — the TechCrunch listing URL for step0
-- `INPUT_FILE` — the input CSV for step1/step2/step3 (output of the prior step)
+- `INPUT_FILE` — the article CSV from step0 (used by step1 and step1b)
+- `DATA_DIR` — where table CSVs are written (default `./data`)
+- `DB_FILE` — the SQLite output path for `build` (default `lazarus.db`)
 - `PROCESSING_LIMIT` (default 10), `BATCH_SIZE` (default 5) — optional tuning
 
 ### Running the pipeline
 
+step1/step1b/step2/step3 read and write the table CSVs in `DATA_DIR`; only step0,
+step1, and step1b need `INPUT_FILE` (the raw article CSV).
+
 ```
-$ SCRAPE_URL=https://techcrunch.com/tag/climate npm run step0
-$ INPUT_FILE=techcrunch_article_<ts>_data.csv       npm run step1
-$ INPUT_FILE=parsed_data_<ts>.csv                   npm run step2
-$ INPUT_FILE=added_funding_data_<ts>.csv            npm run step3
+$ SCRAPE_URL=https://techcrunch.com/tag/climate      npm run step0
+$ INPUT_FILE=techcrunch_article_<ts>_data.csv        npm run step1
+$ INPUT_FILE=techcrunch_article_<ts>_data.csv        npm run step1b
+$ npm run step2
+$ npm run step3
+$ npm run build      # -> lazarus.db
 ```
 
 Switch providers by setting `PROVIDER=ollama` (runs locally, no rate limits).
+Then query the DB, e.g. `SELECT round_year, SUM(amount) FROM funding_rounds GROUP BY round_year`.
 
 ### Lint / typecheck
 
@@ -90,9 +110,11 @@ $ npm run format   # biome format --write
 $ npm test         # vitest run
 ```
 
-Tests cover the deterministic pieces — the step3 funding cleanup logic and the
-listing-page parser (against the saved `scraping/techcrunch/articles_page.txt`
-fixture). The LLM steps are not unit-tested; verify those with a live run.
+Tests cover the deterministic pieces — funding date standardization + dedup (step3),
+the listing-page parser (against the saved `scraping/techcrunch/articles_page.txt`
+fixture), the Zod vocab enums (out-of-vocab values are rejected), and the DB schema
+(CHECK constraints + a company→funding join). The LLM steps are not unit-tested;
+verify those with a live run.
 
 ## Legacy Python
 

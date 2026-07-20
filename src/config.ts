@@ -25,6 +25,8 @@ export const config = {
   // How many articles/rows each step processes; mirrors the original first-10 cap.
   processingLimit: Number(process.env.PROCESSING_LIMIT ?? '10'),
   batchSize: Number(process.env.BATCH_SIZE ?? '5'),
+  // Directory holding the one-CSV-per-table relational output.
+  dataDir: process.env.DATA_DIR ?? './data',
 }
 
 // Provider-specific secrets are read lazily so a step only needs the vars it uses.

@@ -1,63 +1,18 @@
-import { writeFile } from 'node:fs/promises'
-import { type CsvRow, readCsv, writeCsv } from '../lib/csv.js'
-import {
-  aggregateAmountByYear,
-  type StandardizedFundingRound,
-  standardizeFundingData,
-} from '../lib/funding.js'
+import { readTableCsv, writeTableCsv } from '../lib/csv.js'
+import { dedupeFundingRows, type FundingCsvRow } from '../lib/funding.js'
 import { utcTimestamp } from '../lib/timestamp.js'
 
-const groupByCompany = (rows: CsvRow[]): Map<string, CsvRow[]> => {
-  const groups = new Map<string, CsvRow[]>()
-  for (const row of rows) {
-    const companyName = row.company_name ?? ''
-    const group = groups.get(companyName) ?? []
-    group.push(row)
-    groups.set(companyName, group)
-  }
-  return groups
-}
-
-// step3: deterministic cleanup. Groups rows by company, standardizes each
-// company's funding rounds, and writes one reconciled row per company plus a
-// year -> total-amount JSON sidecar (replacing the old matplotlib/plotly plot).
+// step3: deterministic cleanup of funding_rounds.csv. Standardizes dates to
+// YYYY-MM, derives round_year, and de-duplicates rounds per company + round_name,
+// writing the table back in place. No LLM, no century hardcode.
 const main = async (): Promise<void> => {
-  const filename = process.env.INPUT_FILE ?? ''
-  if (!filename) {
-    throw new Error('Set INPUT_FILE to the output CSV from step2')
-  }
+  console.log(utcTimestamp())
 
-  const timestamp = utcTimestamp()
-  console.log(timestamp)
+  const rows = (await readTableCsv('funding_rounds.csv')) as unknown as FundingCsvRow[]
+  const cleaned = dedupeFundingRows(rows)
 
-  const rows = await readCsv(filename)
-  const rowsWithFunding = rows.filter((row) => row.funding_rounds)
-
-  const reconciledRows: CsvRow[] = []
-  const allStandardizedRounds: StandardizedFundingRound[] = []
-
-  for (const [, group] of groupByCompany(rowsWithFunding)) {
-    const firstRow = group[0]
-    if (!firstRow) {
-      continue
-    }
-    const fundingStrings = group.map((row) => row.funding_rounds ?? '')
-    const standardized = standardizeFundingData(fundingStrings)
-    allStandardizedRounds.push(...standardized)
-
-    // Keep the first row of the group, replacing its funding_rounds with the
-    // reconciled set. Drop the schema-artifact columns if present.
-    const { json_schema: _jsonSchema, type: _type, ...keptColumns } = firstRow
-    reconciledRows.push({ ...keptColumns, funding_rounds: JSON.stringify(standardized) })
-  }
-
-  await writeCsv(reconciledRows, `standardized_funding_${timestamp}.csv`)
-
-  const amountByYear = aggregateAmountByYear(allStandardizedRounds)
-  const sidecarName = `standardized_funding_${timestamp}_amount_by_year.json`
-  await writeFile(sidecarName, JSON.stringify(amountByYear, null, 2), 'utf-8')
-  console.log(`Amount-by-year series saved to ${sidecarName}`)
-
+  await writeTableCsv(cleaned, 'funding_rounds.csv')
+  console.log(`Standardized ${rows.length} rows into ${cleaned.length} deduped rounds`)
   console.log('\nDONE\n')
 }
 

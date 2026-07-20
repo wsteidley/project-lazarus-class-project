@@ -1,25 +1,25 @@
 import { z } from 'zod'
 
-// Controlled vocabularies referenced inside the field descriptions so the model
-// is nudged toward consistent values. Ported from response_format.py.
-export const climateSectors = [
-  'Energy',
-  'Transportation',
-  'Agriculture',
-  'Forestry',
-  'Water and Oceans',
-  'Built Environment',
-  'Waste Management',
-  'Land Use and Ecosystem Services',
-  'Carbon Markets and Climate Finance',
-  'Climate Adaptation and Resilience',
-  'Circular Economy',
-  'Environmental Technology',
-  'Carbon Removal',
-  'Climate Advocacy and Policy',
-]
+// Controlled vocabularies, aligned to the language the climate-tech community and
+// investors use. These are the real gate: z.enum forces the LLM output onto the
+// vocab, and the DB build mirrors them as CHECK constraints. See
+// dataset-schema-spec.md for provenance of each list.
 
-export const locations = [
+// High-level verticals (Sightline Climate / CTVC, PwC State of Climate Tech).
+export const SECTOR = [
+  'Energy',
+  'Mobility & Transportation',
+  'Industry & Manufacturing',
+  'Built Environment',
+  'Food, Agriculture & Land Use',
+  'Carbon & GHG Management',
+  'Climate Intelligence & Finance',
+  'Water & Oceans',
+  'Circular Economy & Waste',
+  'Adaptation & Resilience',
+] as const
+
+export const REGION = [
   'North America',
   'South America',
   'Europe',
@@ -27,63 +27,135 @@ export const locations = [
   'Asia',
   'Middle East',
   'Other',
-]
+] as const
 
-export const fundingRoundNames = [
+export const LIVING_STATUS = ['Operating', 'Acquired', 'Zombie', 'Defunct', 'Unknown'] as const
+
+// Standard VC ladder + climate-relevant non-dilutive / project finance.
+export const ROUND = [
+  'Grant',
   'Pre-Seed',
   'Seed',
   'Series A',
   'Series B',
   'Series C',
-  'Series D',
-  'Series E',
-  'Series F',
-  'Other',
-]
+  'Series D+',
+  'Growth / Late Stage',
+  'Debt / Project Finance',
+  'IPO / Public',
+  'Acquisition',
+  'Unknown',
+] as const
 
-// step1: structured company info extracted from a single article.
-export const companyInfoSchema = z.object({
+// CB Insights post-mortem taxonomy + capital-intensive climate-hardtech causes.
+export const FAILURE = [
+  'No Market Need',
+  'Poor Product-Market Fit',
+  'Bad Timing (Ahead of Market)',
+  'Outcompeted',
+  'Flawed Business Model',
+  'Pricing / Unit Economics',
+  'Poor Product / Execution',
+  'Team',
+  'Legal / Regulatory',
+  'Ran Out of Capital',
+  'Technical Feasibility',
+  'Scale-Up / Manufacturing',
+  'Capital Intensity',
+  'Policy / Subsidy Dependence',
+  'Input / Commodity Cost',
+  'Infrastructure / Supply Chain',
+  'Other',
+] as const
+
+// What the idea leaned on — bottlenecks the community tracks.
+export const DEPENDENCY = [
+  'Input / Commodity Cost',
+  'Enabling Technology',
+  'Infrastructure',
+  'Policy & Incentives',
+  'Market Demand / Offtake',
+  'Manufacturing Scale-Up',
+  'Capital Availability',
+  'Supply Chain / Critical Materials',
+  'Talent / Expertise',
+  'Other',
+] as const
+
+export const CRITICALITY = ['was_blocking', 'contributing'] as const
+
+// step1: structured company info + failure reasons extracted from a single article.
+export const failureReasonSchema = z.object({
+  category: z.enum(FAILURE).describe('Controlled failure category'),
+  detail: z.string().nullable().describe('The specific, free-text story for this failure'),
+})
+
+export const companyExtractionSchema = z.object({
   company_name: z.string().describe('Name of the company'),
   founders: z.string().nullable().describe('CSV string of founder names'),
-  is_climate_related: z.boolean().describe('Indicates if the company is climate-related'),
-  climate_sectors: z
-    .string()
+  is_climate: z.boolean().describe('Whether the company is climate-related'),
+  sector: z
+    .enum(SECTOR)
     .nullable()
-    .describe(
-      `If is_climate_related is true, a list of the climate sectors from ${climateSectors.join(', ')} related to this company`,
-    ),
-  location: z
-    .string()
-    .nullable()
-    .describe(`Location of the company from this list: ${locations.join(', ')}`),
-  living_status: z.string().describe('Indicates if the company is dead, living, or unknown'),
+    .describe('High-level climate vertical; null if not climate-related or unclear'),
+  subsector: z.string().nullable().describe('Optional finer free-text label within the sector'),
+  location: z.enum(REGION).nullable().describe('High-level region the company is based in'),
+  country: z.string().nullable().describe('Optional finer country location'),
+  living_status: z.enum(LIVING_STATUS).describe('Current status of the company'),
   has_pivoted: z
     .boolean()
     .nullable()
-    .describe('Indicates if the company has pivoted from its original idea'),
-  year_founded: z.string().nullable().describe('Year the company was founded'),
-  year_died: z.string().nullable().describe('Year the company closed, if applicable'),
+    .describe('Whether the company has pivoted from its original idea'),
+  year_founded: z.number().int().nullable().describe('Year the company was founded (4-digit)'),
+  year_defunct: z
+    .number()
+    .int()
+    .nullable()
+    .describe('Year the company shut down (4-digit); null if still operating'),
   idea_summary: z
     .string()
     .nullable()
     .describe('One-sentence summary of the startup idea and technology'),
+  original_trl: z
+    .number()
+    .int()
+    .min(1)
+    .max(9)
+    .nullable()
+    .describe('Technology Readiness Level (1-9) at the time, if evident; else null'),
   reason_for_demise: z
     .string()
     .nullable()
-    .describe("If applicable, describes reasons for the company's demise"),
+    .describe('Optional overall prose summary of why it failed'),
+  failure_reasons: z
+    .array(failureReasonSchema)
+    .describe('Structured failure reasons; empty array if the company did not fail'),
 })
 
-export type CompanyInfo = z.infer<typeof companyInfoSchema>
+export type CompanyExtraction = z.infer<typeof companyExtractionSchema>
+
+// step1b: idea dependencies decomposed from the article in a separate pass.
+export const ideaDependencySchema = z.object({
+  category: z.enum(DEPENDENCY).describe('Controlled dependency category'),
+  detail: z.string().nullable().describe('The specific thing the idea needed'),
+  criticality: z
+    .enum(CRITICALITY)
+    .describe("'was_blocking' if it blocked success, else 'contributing'"),
+})
+
+export const ideaDependenciesSchema = z.object({
+  dependencies: z.array(ideaDependencySchema),
+})
+
+export type IdeaDependency = z.infer<typeof ideaDependencySchema>
+export type IdeaDependencies = z.infer<typeof ideaDependenciesSchema>
 
 // step2: funding rounds discovered for a company.
 export const fundingRoundSchema = z.object({
-  currency_symbol: z.string().nullable().describe('Currency symbol for the money'),
-  round_name: z
-    .string()
-    .nullable()
-    .describe(`Type of funding round, should be one of ${fundingRoundNames.join(', ')}`),
-  amount: z.number().nullable().describe('Amount of the funding round as a number'),
-  date: z.string().nullable().describe('String representing MM/YY date of the funding'),
+  round_name: z.enum(ROUND).nullable().describe('Controlled funding round name'),
+  amount: z.number().nullable().describe('Amount raised as a number (no currency symbol)'),
+  currency: z.string().nullable().describe('ISO currency code preferred, e.g. USD, EUR'),
+  date: z.string().nullable().describe('Funding date as YYYY-MM (keep the full 4-digit year)'),
 })
 
 export const fundingRoundsSchema = z.object({
