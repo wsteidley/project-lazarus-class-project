@@ -81,13 +81,18 @@ Switch providers by setting `PROVIDER=ollama` (runs locally, no rate limits).
 
 ### Lint / typecheck
 
-Biome is the formatter and linter; `tsc` is the typechecker.
+Biome is the formatter and linter; `tsc` is the typechecker; Vitest runs the tests.
 
 ```
 $ npm run typecheck
 $ npm run lint     # biome check
 $ npm run format   # biome format --write
+$ npm test         # vitest run
 ```
+
+Tests cover the deterministic pieces — the step3 funding cleanup logic and the
+listing-page parser (against the saved `scraping/techcrunch/articles_page.txt`
+fixture). The LLM steps are not unit-tested; verify those with a live run.
 
 ## Legacy Python
 

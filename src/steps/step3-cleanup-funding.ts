@@ -1,8 +1,8 @@
 import { writeFile } from 'node:fs/promises'
 import { type CsvRow, readCsv, writeCsv } from '../lib/csv.js'
 import {
-  type StandardizedFundingRound,
   aggregateAmountByYear,
+  type StandardizedFundingRound,
   standardizeFundingData,
 } from '../lib/funding.js'
 import { utcTimestamp } from '../lib/timestamp.js'
