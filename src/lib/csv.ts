@@ -2,7 +2,6 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { parse } from 'csv-parse/sync'
 import { stringify } from 'csv-stringify/sync'
-import { config } from '../config.js'
 
 // A CSV row is a flat map of column -> string value, matching how pandas
 // round-trips these files. Callers parse/serialize richer fields themselves.
@@ -28,18 +27,19 @@ export const writeCsv = async (
   console.log(`Data successfully saved to ${filename}`)
 }
 
-// Writes a relational table CSV (e.g. "companies.csv") into DATA_DIR, creating the
-// directory if needed. Returns the full path written.
+// Writes a relational table CSV (e.g. "companies.csv") into a run folder, creating
+// it if needed. Returns the full path written.
 export const writeTableCsv = async (
   rows: Record<string, unknown>[],
+  runDir: string,
   tableFilename: string,
 ): Promise<string> => {
-  await mkdir(config.dataDir, { recursive: true })
-  const fullPath = join(config.dataDir, tableFilename)
+  await mkdir(runDir, { recursive: true })
+  const fullPath = join(runDir, tableFilename)
   await writeCsv(rows, fullPath)
   return fullPath
 }
 
-// Reads a relational table CSV from DATA_DIR.
-export const readTableCsv = async (tableFilename: string): Promise<CsvRow[]> =>
-  readCsv(join(config.dataDir, tableFilename))
+// Reads a relational table CSV from a run folder.
+export const readTableCsv = async (runDir: string, tableFilename: string): Promise<CsvRow[]> =>
+  readCsv(join(runDir, tableFilename))

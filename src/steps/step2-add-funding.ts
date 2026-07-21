@@ -1,6 +1,7 @@
 import { config } from '../config.js'
 import { processInBatches } from '../lib/batch.js'
 import { type CsvRow, readTableCsv, writeTableCsv } from '../lib/csv.js'
+import { latestRunDir } from '../lib/paths.js'
 import { utcTimestamp } from '../lib/timestamp.js'
 import { buildChatModel } from '../llm.js'
 import { type FundingRounds, fundingRoundsSchema, ROUND } from '../schemas.js'
@@ -56,7 +57,8 @@ ${searchContext}`
 const main = async (): Promise<void> => {
   console.log(utcTimestamp())
 
-  const companies = await readTableCsv('companies.csv')
+  const runDir = latestRunDir()
+  const companies = await readTableCsv(runDir, 'companies.csv')
   const limitedCompanies = companies.slice(0, config.processingLimit)
 
   const fundingRows = await processInBatches(
@@ -70,7 +72,7 @@ const main = async (): Promise<void> => {
     throw new Error('No funding data was successfully processed')
   }
 
-  await writeTableCsv(flattened, 'funding_rounds.csv')
+  await writeTableCsv(flattened, runDir, 'funding_rounds.csv')
   console.log('\nDONE\n')
 }
 

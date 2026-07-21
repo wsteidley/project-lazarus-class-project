@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { config } from '../config.js'
 import { processInBatches } from '../lib/batch.js'
 import { type CsvRow, readCsv, readTableCsv, writeTableCsv } from '../lib/csv.js'
+import { latestRunDir, latestScrapedDataFile } from '../lib/paths.js'
 import { utcTimestamp } from '../lib/timestamp.js'
 import { buildChatModel } from '../llm.js'
 import { type IdeaDependencies, ideaDependenciesSchema } from '../schemas.js'
@@ -45,15 +46,13 @@ const extractDependencies = async (
 }
 
 const main = async (): Promise<void> => {
-  // The step0 article CSV supplies full content; join to companies by URL.
-  const articleFile = process.env.INPUT_FILE ?? ''
-  if (!articleFile) {
-    throw new Error('Set INPUT_FILE to the article CSV from step0')
-  }
-
   console.log(utcTimestamp())
 
-  const companies = await readTableCsv('companies.csv')
+  const runDir = latestRunDir()
+  // The scraped article CSV supplies full content; join to companies by URL.
+  const articleFile = process.env.INPUT_FILE || latestScrapedDataFile()
+
+  const companies = await readTableCsv(runDir, 'companies.csv')
   const articles = await readCsv(articleFile)
   const contentByUrl = new Map(articles.map((article) => [article.url, article.content ?? '']))
 
@@ -65,7 +64,7 @@ const main = async (): Promise<void> => {
   const dependencyRows = await processInBatches(joined, extractDependencies, config.batchSize)
   const flattened = dependencyRows.flat()
 
-  await writeTableCsv(flattened, 'idea_dependencies.csv')
+  await writeTableCsv(flattened, runDir, 'idea_dependencies.csv')
   console.log('\nDONE\n')
 }
 

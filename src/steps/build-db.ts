@@ -1,12 +1,10 @@
 import { existsSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
-import { config } from '../config.js'
 import { type CsvRow, readCsv } from '../lib/csv.js'
 import { createTablesSql } from '../lib/db-schema.js'
+import { inputFile, latestRunDir } from '../lib/paths.js'
 import { SECTOR } from '../schemas.js'
-
-const dbFile = process.env.DB_FILE ?? 'lazarus.db'
 
 const toText = (value: string | undefined): string | null =>
   value === undefined || value === '' ? null : value
@@ -18,25 +16,28 @@ const toInt = (value: string | undefined): number | null => {
   return Number.isFinite(parsed) ? Math.trunc(parsed) : null
 }
 
-const readTableIfExists = async (tableFilename: string): Promise<CsvRow[]> => {
-  const fullPath = join(config.dataDir, tableFilename)
+const readCsvIfExists = async (fullPath: string): Promise<CsvRow[]> => {
   if (!existsSync(fullPath)) {
-    console.log(`(skipping ${tableFilename} — not found)`)
+    console.log(`(skipping ${fullPath} — not found)`)
     return []
   }
   return readCsv(fullPath)
 }
 
 const main = async (): Promise<void> => {
-  const companies = await readTableIfExists('companies.csv')
+  const runDir = latestRunDir()
+  // DB_FILE overrides; otherwise the DB lives inside the run folder.
+  const dbFile = process.env.DB_FILE || join(runDir, 'lazarus.db')
+
+  const companies = await readCsvIfExists(join(runDir, 'companies.csv'))
   if (companies.length === 0) {
-    throw new Error(`No companies.csv in ${config.dataDir}; run step1 first`)
+    throw new Error(`No companies.csv in ${runDir}; run step1 first`)
   }
-  const ideaSpaces = await readTableIfExists('idea_spaces.csv')
-  const companySectors = await readTableIfExists('company_sectors.csv')
-  const fundingRounds = await readTableIfExists('funding_rounds.csv')
-  const challenges = await readTableIfExists('challenges.csv')
-  const ideaDependencies = await readTableIfExists('idea_dependencies.csv')
+  const ideaSpaces = await readCsvIfExists(inputFile('idea_spaces.csv'))
+  const companySectors = await readCsvIfExists(join(runDir, 'company_sectors.csv'))
+  const fundingRounds = await readCsvIfExists(join(runDir, 'funding_rounds.csv'))
+  const challenges = await readCsvIfExists(join(runDir, 'challenges.csv'))
+  const ideaDependencies = await readCsvIfExists(join(runDir, 'idea_dependencies.csv'))
 
   if (existsSync(dbFile)) {
     rmSync(dbFile)

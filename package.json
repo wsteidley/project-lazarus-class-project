@@ -14,6 +14,7 @@
     "step3": "tsx src/steps/step3-cleanup-funding.ts",
     "derive": "tsx src/steps/derive-outcomes.ts",
     "build": "tsx src/steps/build-db.ts",
+    "clean": "tsx src/steps/clean.ts",
     "typecheck": "tsc --noEmit",
     "lint": "biome check src",
     "format": "biome format --write src",

@@ -1,5 +1,6 @@
 import { readTableCsv, writeTableCsv } from '../lib/csv.js'
 import { dedupeFundingRows, type FundingCsvRow } from '../lib/funding.js'
+import { latestRunDir } from '../lib/paths.js'
 import { utcTimestamp } from '../lib/timestamp.js'
 
 // step3: deterministic cleanup of funding_rounds.csv. Standardizes dates to
@@ -8,10 +9,11 @@ import { utcTimestamp } from '../lib/timestamp.js'
 const main = async (): Promise<void> => {
   console.log(utcTimestamp())
 
-  const rows = (await readTableCsv('funding_rounds.csv')) as unknown as FundingCsvRow[]
+  const runDir = latestRunDir()
+  const rows = (await readTableCsv(runDir, 'funding_rounds.csv')) as unknown as FundingCsvRow[]
   const cleaned = dedupeFundingRows(rows)
 
-  await writeTableCsv(cleaned, 'funding_rounds.csv')
+  await writeTableCsv(cleaned, runDir, 'funding_rounds.csv')
   console.log(`Standardized ${rows.length} rows into ${cleaned.length} deduped rounds`)
   console.log('\nDONE\n')
 }

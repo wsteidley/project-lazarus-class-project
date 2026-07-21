@@ -1,5 +1,6 @@
 import { type CsvRow, readTableCsv, writeTableCsv } from '../lib/csv.js'
 import { deriveOutcome } from '../lib/derive-outcome.js'
+import { latestRunDir } from '../lib/paths.js'
 import { utcTimestamp } from '../lib/timestamp.js'
 
 // Per-company funding summary used as derivation input.
@@ -52,8 +53,9 @@ const main = async (): Promise<void> => {
     ? new Date(process.env.BUILD_DATE).getFullYear()
     : new Date().getFullYear()
 
-  const companies = await readTableCsv('companies.csv')
-  const fundingRows = await readTableCsv('funding_rounds.csv').catch(() => [])
+  const runDir = latestRunDir()
+  const companies = await readTableCsv(runDir, 'companies.csv')
+  const fundingRows = await readTableCsv(runDir, 'funding_rounds.csv').catch(() => [])
   const fundingByCompany = summarizeFunding(fundingRows)
 
   const updated = companies.map((company) => {
@@ -75,7 +77,7 @@ const main = async (): Promise<void> => {
     return { ...company, outcome_type, outcome_rationale }
   })
 
-  await writeTableCsv(updated, 'companies.csv')
+  await writeTableCsv(updated, runDir, 'companies.csv')
   console.log(`Derived outcome_type for ${updated.length} companies`)
   console.log('\nDONE\n')
 }

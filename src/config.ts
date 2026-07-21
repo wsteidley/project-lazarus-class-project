@@ -1,4 +1,5 @@
 import 'dotenv/config'
+import { join } from 'node:path'
 
 export type Provider = 'openai' | 'ollama'
 
@@ -25,9 +26,15 @@ export const config = {
   // How many articles/rows each step processes; mirrors the original first-10 cap.
   processingLimit: Number(process.env.PROCESSING_LIMIT ?? '10'),
   batchSize: Number(process.env.BATCH_SIZE ?? '5'),
-  // Directory holding the one-CSV-per-table relational output.
+  // Root of all pipeline data. The three scoped areas below hang off it.
   dataDir: process.env.DATA_DIR ?? './data',
 }
+
+// Scoped data areas: curated input (tracked), raw scrapes, and timestamped run
+// output. Derived from dataDir so DATA_DIR relocates the whole tree.
+export const inputDir = join(config.dataDir, 'input')
+export const scrapedDir = join(config.dataDir, 'scraped')
+export const outputBaseDir = join(config.dataDir, 'output')
 
 // Provider-specific secrets are read lazily so a step only needs the vars it uses.
 export const requireOpenAiKey = (): string => requireEnv('OPENAI_API_KEY')

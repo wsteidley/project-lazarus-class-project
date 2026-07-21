@@ -1,9 +1,9 @@
 import { randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
-import { join } from 'node:path'
 import { config } from '../config.js'
 import { processInBatches } from '../lib/batch.js'
-import { type CsvRow, readCsv, readTableCsv, writeTableCsv } from '../lib/csv.js'
+import { type CsvRow, readCsv, writeTableCsv } from '../lib/csv.js'
+import { inputFile, latestScrapedDataFile, newRunDir } from '../lib/paths.js'
 import { utcTimestamp } from '../lib/timestamp.js'
 import { buildChatModel } from '../llm.js'
 import { type CompanyExtraction, companyExtractionSchema } from '../schemas.js'
@@ -21,12 +21,12 @@ const bit = (value: boolean | null): 0 | 1 | '' => (value === null ? '' : value 
 // Loads the curated idea_spaces seed (name + description) to inject into the
 // prompt and to validate the model's choice against. Missing seed => no mapping.
 const loadIdeaSpaces = async (): Promise<{ names: Set<string>; promptList: string }> => {
-  const seedPath = join(config.dataDir, 'idea_spaces.csv')
+  const seedPath = inputFile('idea_spaces.csv')
   if (!existsSync(seedPath)) {
     console.warn(`No curated ${seedPath} — idea_space_name will be left unmapped`)
     return { names: new Set(), promptList: '(none provided)' }
   }
-  const rows = await readTableCsv('idea_spaces.csv')
+  const rows = await readCsv(seedPath)
   const names = new Set(rows.map((row) => row.name).filter((name): name is string => Boolean(name)))
   const promptList = rows
     .map((row) => `- ${row.name}${row.description ? `: ${row.description}` : ''}`)
@@ -132,12 +132,10 @@ const extractCompany = (
 }
 
 const main = async (): Promise<void> => {
-  const filename = process.env.INPUT_FILE ?? ''
-  if (!filename) {
-    throw new Error('Set INPUT_FILE to the article CSV from step0')
-  }
-
+  // INPUT_FILE overrides; otherwise use the latest scrape from data/scraped.
+  const filename = process.env.INPUT_FILE || latestScrapedDataFile()
   console.log(utcTimestamp())
+  console.log(`Reading articles from ${filename}`)
 
   const { names: ideaSpaceNames, promptList: ideaSpaceList } = await loadIdeaSpaces()
   const articles = await readCsv(filename)
@@ -153,18 +151,24 @@ const main = async (): Promise<void> => {
     throw new Error('No data was successfully processed')
   }
 
+  // Start a fresh run folder for this extraction; later steps flow into it.
+  const runDir = await newRunDir()
   await writeTableCsv(
     results.map((result) => result.company),
+    runDir,
     'companies.csv',
   )
   await writeTableCsv(
     results.flatMap((result) => result.sectors),
+    runDir,
     'company_sectors.csv',
   )
   await writeTableCsv(
     results.flatMap((result) => result.challenges),
+    runDir,
     'challenges.csv',
   )
+  console.log(`Run folder: ${runDir}`)
   console.log('\nDONE\n')
 }
 

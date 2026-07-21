@@ -169,9 +169,7 @@ dist/
 *.tsbuildinfo
 npm-debug.log*
 
-# Pipeline output
-*.csv
-
-# Built SQLite database
-lazarus.db
-*.db
+# Pipeline output: scraped data and timestamped run folders (incl. built DBs).
+# data/input/ (the curated idea_spaces seed) is intentionally NOT ignored.
+data/scraped/
+data/output/

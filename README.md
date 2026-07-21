@@ -59,13 +59,30 @@ The stages are:
   `node:sqlite`), seeding the `sectors` reference rows, resolving name/uuid foreign
   keys, and enabling FK enforcement.
 
-`data/idea_spaces.csv` is a **curated seed** you maintain (name, home sector,
+`data/input/idea_spaces.csv` is a **curated seed** you maintain (name, home sector,
 description); step1 only maps companies into spaces you've defined, and the quality
 of the head-to-head comparisons depends on it. Controlled-vocabulary fields are
 enforced by Zod enums in [src/schemas.ts](src/schemas.ts) and mirrored as DB
 `CHECK` constraints. `outcome_type` gray-zone LLM adjudication, the reassessment
 axis (`dependency_assessments`, `current_trl`), and a `sources` table are specced
 but not yet implemented.
+
+### Data layout
+
+Everything lives under `data/` (relocatable via `DATA_DIR`):
+
+```
+data/
+  input/idea_spaces.csv        # curated seed you maintain (tracked, never cleaned)
+  scraped/                     # step0 output, timestamped article CSVs
+  output/<run>/                # one timestamped folder per pipeline run:
+                               #   the table CSVs + lazarus.db
+```
+
+Steps **auto-resolve the latest input** — you never pass a run id. step1 reads the
+newest scrape and opens a fresh `output/<run>/`; step1b/step2/step3/derive/build all
+flow into the newest run folder (build writes `lazarus.db` there). `npm run clean`
+wipes `scraped/` and `output/` but leaves your curated `input/` intact.
 
 ## TypeScript (src/)
 
@@ -91,26 +108,27 @@ Environment variables (see `.env.example`):
 - `LLAMA_BASE_URL` — when `PROVIDER=ollama`, e.g. `http://localhost:11434`
 - `CRUNCHBASE_API_KEY` — optional, enables Crunchbase enrichment in step1
 - `SCRAPE_URL` — the TechCrunch listing URL for step0
-- `INPUT_FILE` — the article CSV from step0 (used by step1 and step1b)
-- `DATA_DIR` — where table CSVs are written (default `./data`)
-- `DB_FILE` — the SQLite output path for `build` (default `lazarus.db`)
+- `DATA_DIR` — root data dir (default `./data`)
+- `INPUT_FILE` — optional override of the auto-selected scrape (step1/step1b)
+- `DB_FILE` — optional override of the DB path (default `<run>/lazarus.db`)
 - `BUILD_DATE` — reference date for the `derive` step (default: now)
 - `PROCESSING_LIMIT` (default 10), `BATCH_SIZE` (default 5) — optional tuning
 
 ### Running the pipeline
 
-Populate the curated `data/idea_spaces.csv` first (a starter file is included).
-step1/step1b/step2/step3/derive read and write the table CSVs in `DATA_DIR`; only
-step0, step1, and step1b need `INPUT_FILE` (the raw article CSV).
+Populate the curated `data/input/idea_spaces.csv` first (a starter file is
+included). Each step auto-resolves the latest input, so no paths to pass:
 
 ```
-$ SCRAPE_URL=https://techcrunch.com/tag/climate      npm run step0
-$ INPUT_FILE=techcrunch_article_<ts>_data.csv        npm run step1
-$ INPUT_FILE=techcrunch_article_<ts>_data.csv        npm run step1b
+$ SCRAPE_URL=https://techcrunch.com/tag/climate  npm run step0   # -> data/scraped/
+$ npm run step1      # latest scrape -> new data/output/<run>/
+$ npm run step1b
 $ npm run step2
 $ npm run step3
 $ npm run derive     # compute outcome_type from the signals
-$ npm run build      # -> lazarus.db
+$ npm run build      # -> data/output/<run>/lazarus.db
+
+$ npm run clean      # wipe scraped/ + output/, keep curated input/
 ```
 
 Switch providers by setting `PROVIDER=ollama` (runs locally, no rate limits). Then

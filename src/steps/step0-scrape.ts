@@ -1,3 +1,6 @@
+import { mkdir } from 'node:fs/promises'
+import { join } from 'node:path'
+import { scrapedDir } from '../config.js'
 import { writeCsv } from '../lib/csv.js'
 import { scrapeAllArticles, scrapeListingsWithPagination } from '../lib/scrape.js'
 import { utcTimestamp } from '../lib/timestamp.js'
@@ -16,13 +19,15 @@ const main = async (): Promise<void> => {
   const timestamp = utcTimestamp()
   console.log(timestamp)
 
+  await mkdir(scrapedDir, { recursive: true })
+  const fileStamp = timestamp.replace(/:/g, '-')
+
   const articleIndex = await scrapeListingsWithPagination(url, '', timestamp)
-  await writeCsv(articleIndex, `techcrunch_article_${timestamp}_data_index.csv`)
+  await writeCsv(articleIndex, join(scrapedDir, `techcrunch_article_${fileStamp}_data_index.csv`))
 
   const articleUrls = articleIndex.map((entry) => entry.url).filter(Boolean)
-  console.log('>>>>>>>', articleUrls.length)
   const articleData = await scrapeAllArticles(articleUrls, timestamp)
-  await writeCsv(articleData, `techcrunch_article_${timestamp}_data.csv`)
+  await writeCsv(articleData, join(scrapedDir, `techcrunch_article_${fileStamp}_data.csv`))
 
   console.log('\nDONE\n')
 }
