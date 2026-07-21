@@ -38,7 +38,7 @@ const buildPrompt = (
   article: CsvRow,
   ideaSpaceList: string,
   crunchbaseContext: string,
-): string => `You are a helpful data processor and extractor. Extract structured information about the company described in the article, using the required schema. Leave a field null if the article does not support a value. Record every notable challenge the company faced with its outcome (fatal / overcome / pivoted_from / ongoing) — this applies to survivors as well as failures. Capture any exit event (acquisition/ipo/shutdown) in the exit_* fields, separate from funding. Assign one or more sectors, marking exactly one is_primary.
+): string => `You are a helpful data processor and extractor. Extract structured information about the company described in the article, using the required schema. Leave a field null if the article does not support a value. Record every notable challenge the company faced with its outcome (fatal / overcome / pivoted_from / ongoing) — this applies to survivors as well as failures. For each challenge also rate your confidence in it (unknown / low / medium / high) based on how directly the article supports it, and set contested=true only if the article itself reports conflicting accounts. Capture any exit event (acquisition/ipo/shutdown) in the exit_* fields, separate from funding. Assign one or more sectors, marking exactly one is_primary.
 
 Choose idea_space_name from this curated list (or null if none genuinely fits):
 ${ideaSpaceList}
@@ -124,6 +124,10 @@ const extractCompany = (
       category: challenge.category,
       outcome: challenge.outcome,
       detail: challenge.detail,
+      confidence: challenge.confidence,
+      confidence_score: '', // only populated when computed from signals, not self-reported
+      contested: bit(challenge.contested),
+      contested_note: challenge.contested_note,
       source_url: sourceUrl,
     }))
 

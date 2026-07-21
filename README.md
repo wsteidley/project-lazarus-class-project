@@ -44,9 +44,14 @@ The stages are:
   (optionally Crunchbase-enriched), mapping each company into the curated
   `data/idea_spaces.csv`. Writes `data/companies.csv`, `data/company_sectors.csv`
   (a company can span several sectors), and `data/challenges.csv` (each challenge
-  tagged fatal / overcome / pivoted_from / ongoing).
+  tagged fatal / overcome / pivoted_from / ongoing, each with a `confidence` level
+  and a `contested` flag for when sources disagree).
 - **step1b** — a separate LLM pass decomposing each idea into its dependencies.
-  Writes `data/idea_dependencies.csv`.
+  Writes `data/idea_dependencies.csv` (free text, one row per company).
+- **step1c** — resolves those free-text dependencies onto the curated canonical list
+  in `data/input/dependencies.csv`, merging duplicates per company. Writes
+  `company_dependencies.csv`. Anything that matches nothing canonical is kept with a
+  blank name and reported, never silently dropped — add it to the seed and re-run.
 - **step2** — find funding-round data per company via web search (DuckDuckGo +
   Wikipedia) + the LLM, one row per round. Writes `data/funding_rounds.csv`.
 - **step3** — deterministic cleanup: standardize dates to `YYYY-MM` (4-digit year),
@@ -55,17 +60,25 @@ The stages are:
   `outcome_rationale` from `living_status`, total raised, exit signals, and company
   age. Runs after step3 (needs funding); rewrites `data/companies.csv`. Thresholds
   live in [src/lib/derive-outcome.ts](src/lib/derive-outcome.ts) — tune them there.
+- **reassess** — the "now" axis: for each *canonical* dependency, searches the web
+  today and records where it stands (`resolved` / `improving` / `unchanged` /
+  `worsening`), with a metric where the sources give one, plus its own evidence
+  (`source_url`, verbatim `snippet`, `confidence`, `contested`). Writes
+  `dependency_assessments.csv`. Assessed per shared dependency rather than per
+  company, so one verdict serves every company that depended on it.
 - **build** — load the table CSVs into `lazarus.db` (SQLite via Node's built-in
   `node:sqlite`), seeding the `sectors` reference rows, resolving name/uuid foreign
-  keys, and enabling FK enforcement.
+  keys, and enabling FK enforcement. Also mirrors the fetch cache into
+  `raw_documents`.
 
-`data/input/idea_spaces.csv` is a **curated seed** you maintain (name, home sector,
-description); step1 only maps companies into spaces you've defined, and the quality
-of the head-to-head comparisons depends on it. Controlled-vocabulary fields are
-enforced by Zod enums in [src/schemas.ts](src/schemas.ts) and mirrored as DB
-`CHECK` constraints. `outcome_type` gray-zone LLM adjudication, the reassessment
-axis (`dependency_assessments`, `current_trl`), and a `sources` table are specced
-but not yet implemented.
+`data/input/idea_spaces.csv` and `data/input/dependencies.csv` are **curated seeds**
+you maintain; step1 only maps companies into idea spaces you've defined, and step1c
+only resolves dependencies onto canonical rows you've defined. The quality of the
+head-to-head comparisons depends on both. Controlled-vocabulary fields are enforced
+by Zod enums in [src/schemas.ts](src/schemas.ts) and mirrored as DB `CHECK`
+constraints. `outcome_type` gray-zone LLM adjudication, `current_trl`, the
+`became_viable_date` derivation over the `threshold_*` columns, and a `sources` table
+are specced but not yet implemented.
 
 ### Data layout
 
@@ -73,16 +86,24 @@ Everything lives under `data/` (relocatable via `DATA_DIR`):
 
 ```
 data/
-  input/idea_spaces.csv        # curated seed you maintain (tracked, never cleaned)
+  input/idea_spaces.csv        # curated seeds you maintain (tracked, never cleaned)
+  input/dependencies.csv       #   canonical dependencies + their viability thresholds
   scraped/                     # step0 output, timestamped article CSVs
+  cache/<url_hash>.json        # content-addressed fetch cache, survives runs
   output/<run>/                # one timestamped folder per pipeline run:
                                #   the table CSVs + lazarus.db
 ```
 
 Steps **auto-resolve the latest input** — you never pass a run id. step1 reads the
-newest scrape and opens a fresh `output/<run>/`; step1b/step2/step3/derive/build all
-flow into the newest run folder (build writes `lazarus.db` there). `npm run clean`
-wipes `scraped/` and `output/` but leaves your curated `input/` intact.
+newest scrape and opens a fresh `output/<run>/`; the later steps all flow into the
+newest run folder (build writes `lazarus.db` there). `npm run clean` wipes `scraped/`
+and `output/` but leaves your curated `input/` intact.
+
+`cache/` sits deliberately outside the run folders so it survives them: re-extracting
+under an evolving schema never re-scrapes. Freshness is two-tier — launch articles
+(`discovery`) are immutable and cached forever, while `outcome`/`reassessment` results
+expire after `CACHE_TTL_DAYS` (default 30), because a company alive today may fold
+next year.
 
 ## TypeScript (src/)
 
@@ -112,20 +133,24 @@ Environment variables (see `.env.example`):
 - `INPUT_FILE` — optional override of the auto-selected scrape (step1/step1b)
 - `DB_FILE` — optional override of the DB path (default `<run>/lazarus.db`)
 - `BUILD_DATE` — reference date for the `derive` step (default: now)
+- `CACHE_TTL_DAYS` — how long perishable cached documents stay usable (default 30)
 - `PROCESSING_LIMIT` (default 10), `BATCH_SIZE` (default 5) — optional tuning
 
 ### Running the pipeline
 
-Populate the curated `data/input/idea_spaces.csv` first (a starter file is
-included). Each step auto-resolves the latest input, so no paths to pass:
+Populate the curated `data/input/idea_spaces.csv` and `data/input/dependencies.csv`
+first (starter files are included). Each step auto-resolves the latest input, so no
+paths to pass:
 
 ```
 $ SCRAPE_URL=https://techcrunch.com/tag/climate  npm run step0   # -> data/scraped/
 $ npm run step1      # latest scrape -> new data/output/<run>/
 $ npm run step1b
+$ npm run step1c     # free-text dependencies -> canonical ones
 $ npm run step2
 $ npm run step3
 $ npm run derive     # compute outcome_type from the signals
+$ npm run reassess   # where each dependency stands today
 $ npm run build      # -> data/output/<run>/lazarus.db
 
 $ npm run clean      # wipe scraped/ + output/, keep curated input/

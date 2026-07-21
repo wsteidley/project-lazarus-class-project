@@ -26,8 +26,12 @@ export const config = {
   // How many articles/rows each step processes; mirrors the original first-10 cap.
   processingLimit: Number(process.env.PROCESSING_LIMIT ?? '10'),
   batchSize: Number(process.env.BATCH_SIZE ?? '5'),
-  // Root of all pipeline data. The three scoped areas below hang off it.
+  // Root of all pipeline data. The scoped areas below hang off it.
   dataDir: process.env.DATA_DIR ?? './data',
+  // How long a perishable cached document stays usable. Discovery text ignores this
+  // (launch articles are immutable); outcome/reassessment results expire, because a
+  // company alive today may fold next year.
+  cacheTtlDays: Number(process.env.CACHE_TTL_DAYS ?? '30'),
 }
 
 // Scoped data areas: curated input (tracked), raw scrapes, and timestamped run
@@ -35,6 +39,9 @@ export const config = {
 export const inputDir = join(config.dataDir, 'input')
 export const scrapedDir = join(config.dataDir, 'scraped')
 export const outputBaseDir = join(config.dataDir, 'output')
+// Content-addressed raw-document cache. Deliberately outside the run folders so it
+// survives runs: re-extraction under an evolving schema must never re-scrape.
+export const cacheDir = join(config.dataDir, 'cache')
 
 // Provider-specific secrets are read lazily so a step only needs the vars it uses.
 export const requireOpenAiKey = (): string => requireEnv('OPENAI_API_KEY')

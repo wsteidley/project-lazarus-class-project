@@ -106,6 +106,21 @@ export const DEPENDENCY = [
 
 export const CRITICALITY = ['was_blocking', 'contributing'] as const
 
+// Evidence strength for any judged row. Four levels because that's the resolution an
+// LLM can produce reliably — a finer hand-scale would be false precision. Orthogonal
+// to `contested` (which records that sources disagree): high-and-contested is real.
+export const CONFIDENCE = ['unknown', 'low', 'medium', 'high'] as const
+
+// Where a dependency stands *now*, relative to when the company needed it. This is
+// the "now" axis the reassessment pass exists to establish.
+export const ASSESSMENT_STATUS = [
+  'resolved',
+  'improving',
+  'unchanged',
+  'worsening',
+  'unknown',
+] as const
+
 // step1: structured company info + challenges extracted from a single article.
 // A challenge applies to survivors and failures alike; the outcome carries which.
 export const challengeSchema = z.object({
@@ -114,6 +129,14 @@ export const challengeSchema = z.object({
     .enum(CHALLENGE_OUTCOME)
     .describe("Whether it was 'fatal', 'overcome', 'pivoted_from', or still 'ongoing'"),
   detail: z.string().nullable().describe('The specific, free-text story for this challenge'),
+  confidence: z
+    .enum(CONFIDENCE)
+    .describe("How well the source supports this challenge; 'unknown' if it's a guess"),
+  contested: z.boolean().describe('True if sources disagree about this challenge or its outcome'),
+  contested_note: z
+    .string()
+    .nullable()
+    .describe('What the disagreement is, when contested; else null'),
 })
 
 // One or more sectors a company sits in; exactly one should be is_primary.
@@ -208,3 +231,37 @@ export const fundingRoundsSchema = z.object({
 
 export type FundingRound = z.infer<typeof fundingRoundSchema>
 export type FundingRounds = z.infer<typeof fundingRoundsSchema>
+
+// step1c: maps one company's free-text dependency onto the curated canonical list.
+// Null means "none of them fit" — the row is kept unresolved rather than forced, so
+// a bad match never silently poisons the shared dependency's assessments.
+export const dependencyResolutionSchema = z.object({
+  canonical_name: z
+    .string()
+    .nullable()
+    .describe('Exact name from the provided canonical list, or null if none genuinely fits'),
+})
+
+// reassess: the "now" verdict for one canonical dependency, with its own evidence so
+// the automated call is auditable and can later be swapped for a real data feed.
+export const dependencyAssessmentSchema = z.object({
+  status: z.enum(ASSESSMENT_STATUS).describe('Where this dependency stands today'),
+  detail: z.string().nullable().describe('Free-text justification for the status'),
+  metric_name: z
+    .string()
+    .nullable()
+    .describe('The quantity that settles this, e.g. "battery pack price"'),
+  metric_value: z.number().nullable().describe('Current value of that metric, as a number'),
+  metric_unit: z.string().nullable().describe('Unit for the metric, e.g. "USD/kWh"'),
+  source_url: z.string().nullable().describe('URL the value/verdict came from'),
+  snippet: z
+    .string()
+    .nullable()
+    .describe('Short verbatim quote from the source supporting the verdict'),
+  confidence: z.enum(CONFIDENCE).describe('Evidence strength behind this assessment'),
+  contested: z.boolean().describe('True if sources disagree on the current state'),
+  contested_note: z.string().nullable().describe('What the disagreement is; else null'),
+})
+
+export type DependencyResolution = z.infer<typeof dependencyResolutionSchema>
+export type DependencyAssessment = z.infer<typeof dependencyAssessmentSchema>

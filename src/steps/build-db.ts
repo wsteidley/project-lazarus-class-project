@@ -4,6 +4,7 @@ import { DatabaseSync } from 'node:sqlite'
 import { type CsvRow, readCsv } from '../lib/csv.js'
 import { createTablesSql } from '../lib/db-schema.js'
 import { inputFile, latestRunDir } from '../lib/paths.js'
+import { readAllCachedDocuments } from '../lib/raw-documents.js'
 import { SECTOR } from '../schemas.js'
 
 const toText = (value: string | undefined): string | null =>
@@ -14,6 +15,14 @@ const toInt = (value: string | undefined): number | null => {
   }
   const parsed = Number(value)
   return Number.isFinite(parsed) ? Math.trunc(parsed) : null
+}
+// Like toInt but keeps the fractional part, for metric/threshold/score columns.
+const toReal = (value: string | undefined): number | null => {
+  if (value === undefined || value === '') {
+    return null
+  }
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? parsed : null
 }
 
 const readCsvIfExists = async (fullPath: string): Promise<CsvRow[]> => {
@@ -37,7 +46,11 @@ const main = async (): Promise<void> => {
   const companySectors = await readCsvIfExists(join(runDir, 'company_sectors.csv'))
   const fundingRounds = await readCsvIfExists(join(runDir, 'funding_rounds.csv'))
   const challenges = await readCsvIfExists(join(runDir, 'challenges.csv'))
-  const ideaDependencies = await readCsvIfExists(join(runDir, 'idea_dependencies.csv'))
+  // The canonical dependency dimension is a curated input, not a run output.
+  const dependencies = await readCsvIfExists(inputFile('dependencies.csv'))
+  const companyDependencies = await readCsvIfExists(join(runDir, 'company_dependencies.csv'))
+  const assessments = await readCsvIfExists(join(runDir, 'dependency_assessments.csv'))
+  const rawDocuments = await readAllCachedDocuments()
 
   if (existsSync(dbFile)) {
     rmSync(dbFile)
@@ -151,7 +164,10 @@ const main = async (): Promise<void> => {
   }
 
   const insertChallenge = db.prepare(
-    'INSERT INTO challenges (company_id, category, outcome, detail, source_url) VALUES (?, ?, ?, ?, ?)',
+    `INSERT INTO challenges
+      (company_id, category, outcome, detail, confidence, confidence_score, contested,
+       contested_note, source_url)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   )
   for (const row of challenges) {
     const companyId = companyIdFor(row)
@@ -164,28 +180,101 @@ const main = async (): Promise<void> => {
       toText(row.category),
       toText(row.outcome),
       toText(row.detail),
+      toText(row.confidence),
+      toReal(row.confidence_score),
+      toInt(row.contested),
+      toText(row.contested_note),
       toText(row.source_url),
     )
   }
 
+  // dependencies: curated canonical dimension. name -> id, for the two tables below.
   const insertDependency = db.prepare(
-    `INSERT INTO idea_dependencies
-      (uuid, company_id, category, detail, criticality, source_url)
-     VALUES (?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO dependencies
+      (uuid, name, category, description, threshold_metric, threshold_value, threshold_unit)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
   )
-  for (const row of ideaDependencies) {
+  const dependencyIdByName = new Map<string, number>()
+  for (const row of dependencies) {
+    const info = insertDependency.run(
+      toText(row.uuid),
+      toText(row.name) ?? '',
+      toText(row.category),
+      toText(row.description),
+      toText(row.threshold_metric),
+      toReal(row.threshold_value),
+      toText(row.threshold_unit),
+    )
+    if (row.name) {
+      dependencyIdByName.set(row.name, Number(info.lastInsertRowid))
+    }
+  }
+
+  // company_dependencies: resolve company_uuid + dependency_name. Rows step1c left
+  // unresolved have no canonical dependency and are counted as skipped.
+  const insertCompanyDependency = db.prepare(
+    `INSERT OR IGNORE INTO company_dependencies
+      (company_id, dependency_id, criticality, detail, source_url)
+     VALUES (?, ?, ?, ?, ?)`,
+  )
+  for (const row of companyDependencies) {
     const companyId = companyIdFor(row)
-    if (companyId === undefined) {
+    const dependencyId = dependencyIdByName.get(row.dependency_name ?? '')
+    if (companyId === undefined || dependencyId === undefined) {
       skipped += 1
       continue
     }
-    insertDependency.run(
-      toText(row.uuid),
+    insertCompanyDependency.run(
       companyId,
-      toText(row.category),
-      toText(row.detail),
+      dependencyId,
       toText(row.criticality),
+      toText(row.detail),
       toText(row.source_url),
+    )
+  }
+
+  const insertAssessment = db.prepare(
+    `INSERT INTO dependency_assessments
+      (uuid, dependency_id, status, detail, metric_name, metric_value, metric_unit,
+       assessed_on, source_url, snippet, confidence, confidence_score, contested, contested_note)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  )
+  for (const row of assessments) {
+    const dependencyId = dependencyIdByName.get(row.dependency_name ?? '')
+    if (dependencyId === undefined) {
+      skipped += 1
+      continue
+    }
+    insertAssessment.run(
+      toText(row.uuid),
+      dependencyId,
+      toText(row.status),
+      toText(row.detail),
+      toText(row.metric_name),
+      toReal(row.metric_value),
+      toText(row.metric_unit),
+      toText(row.assessed_on),
+      toText(row.source_url),
+      toText(row.snippet),
+      toText(row.confidence),
+      toReal(row.confidence_score),
+      toInt(row.contested),
+      toText(row.contested_note),
+    )
+  }
+
+  // raw_documents: the on-disk fetch cache, mirrored into the DB for querying.
+  const insertRawDocument = db.prepare(
+    `INSERT OR IGNORE INTO raw_documents (url, url_hash, fetched_at, text, source_type)
+     VALUES (?, ?, ?, ?, ?)`,
+  )
+  for (const document of rawDocuments) {
+    insertRawDocument.run(
+      document.url,
+      document.url_hash,
+      document.fetched_at,
+      document.text,
+      document.source_type,
     )
   }
 
@@ -195,7 +284,8 @@ const main = async (): Promise<void> => {
     `Built ${dbFile}: ${SECTOR.length} sectors, ${ideaSpaces.length} idea_spaces, ` +
       `${companies.length} companies, ${companySectors.length} company_sectors, ` +
       `${fundingRounds.length} funding_rounds, ${challenges.length} challenges, ` +
-      `${ideaDependencies.length} idea_dependencies` +
+      `${dependencies.length} dependencies, ${companyDependencies.length} company_dependencies, ` +
+      `${assessments.length} dependency_assessments, ${rawDocuments.length} raw_documents` +
       (skipped ? ` (${skipped} child rows skipped — unresolved FK)` : ''),
   )
   console.log('\nDONE\n')

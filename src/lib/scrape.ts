@@ -1,4 +1,5 @@
 import * as cheerio from 'cheerio'
+import { fetchWithCache } from './raw-documents.js'
 import { utcTimestamp } from './timestamp.js'
 
 export type ArticleIndexEntry = {
@@ -18,13 +19,19 @@ export type ArticleData = {
   url: string
 }
 
-const fetchHtml = async (url: string): Promise<string> => {
+const fetchHtmlUncached = async (url: string): Promise<string> => {
   const response = await fetch(url)
   if (!response.ok) {
     throw new Error(`Failed to retrieve ${url}. Status code: ${response.status}`)
   }
   return response.text()
 }
+
+// Article HTML is 'discovery' text: it describes the launch moment and never changes,
+// so it is cached indefinitely. Re-running extraction under a new schema then costs
+// no network at all.
+const fetchHtml = (url: string): Promise<string> =>
+  fetchWithCache(url, 'discovery', fetchHtmlUncached)
 
 // Parses listing HTML into article index entries. Split out from the network
 // fetch so it can be unit-tested against a saved fixture. Uses the same CSS

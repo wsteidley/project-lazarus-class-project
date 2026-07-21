@@ -22,7 +22,14 @@ const validCompany = {
   outcome_summary: 'Wound down after failing to raise a Series C',
   outcome_source_url: null,
   challenges: [
-    { category: 'Ran Out of Capital', outcome: 'fatal', detail: 'burned through Series B' },
+    {
+      category: 'Ran Out of Capital',
+      outcome: 'fatal',
+      detail: 'burned through Series B',
+      confidence: 'high',
+      contested: false,
+      contested_note: null,
+    },
   ],
 }
 
@@ -42,7 +49,16 @@ describe('companyExtractionSchema', () => {
   it('rejects an out-of-vocab challenge category', () => {
     const result = companyExtractionSchema.safeParse({
       ...validCompany,
-      challenges: [{ category: 'Bad Vibes', outcome: 'fatal', detail: null }],
+      challenges: [
+        {
+          category: 'Bad Vibes',
+          outcome: 'fatal',
+          detail: null,
+          confidence: 'high',
+          contested: false,
+          contested_note: null,
+        },
+      ],
     })
     expect(result.success).toBe(false)
   })
@@ -50,7 +66,16 @@ describe('companyExtractionSchema', () => {
   it('rejects an out-of-vocab challenge outcome', () => {
     const result = companyExtractionSchema.safeParse({
       ...validCompany,
-      challenges: [{ category: 'Team', outcome: 'vanished', detail: null }],
+      challenges: [
+        {
+          category: 'Team',
+          outcome: 'vanished',
+          detail: null,
+          confidence: 'high',
+          contested: false,
+          contested_note: null,
+        },
+      ],
     })
     expect(result.success).toBe(false)
   })

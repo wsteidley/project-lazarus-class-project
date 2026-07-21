@@ -1,6 +1,8 @@
 import {
+  ASSESSMENT_STATUS,
   CHALLENGE,
   CHALLENGE_OUTCOME,
+  CONFIDENCE,
   CRITICALITY,
   DEPENDENCY,
   EXIT_TYPE,
@@ -9,6 +11,7 @@ import {
   REGION,
   ROUND,
 } from '../schemas.js'
+import { SOURCE_TYPE } from './raw-documents.js'
 
 // Builds a `col IN ('a','b',...)` CHECK clause from a controlled-vocab array, so
 // the DB constraints can't drift from the Zod enums. Nullable columns also allow
@@ -21,8 +24,8 @@ const checkIn = (column: string, values: readonly string[], nullable = true): st
 
 // Full DDL for the relational schema. sectors are reference rows (seeded from the
 // SECTOR vocab); a company sits in one idea_space (its specific pursuit) and 1+
-// sectors (broad verticals) via company_sectors. idea_dependencies and challenges
-// carry provenance so future assessments can reference them.
+// sectors (broad verticals) via company_sectors. Dependencies are canonical and
+// shared (see below); challenges carry provenance and confidence.
 export const createTablesSql = (): string => `
 CREATE TABLE sectors (
   id    INTEGER PRIMARY KEY,
@@ -82,21 +85,74 @@ CREATE TABLE funding_rounds (
 );
 
 CREATE TABLE challenges (
-  id           INTEGER PRIMARY KEY,
-  company_id   INTEGER NOT NULL REFERENCES companies(id),
-  category     TEXT ${checkIn('category', CHALLENGE)},
-  outcome      TEXT ${checkIn('outcome', CHALLENGE_OUTCOME)},
-  detail       TEXT,
-  source_url   TEXT
+  id               INTEGER PRIMARY KEY,
+  company_id       INTEGER NOT NULL REFERENCES companies(id),
+  category         TEXT ${checkIn('category', CHALLENGE)},
+  outcome          TEXT ${checkIn('outcome', CHALLENGE_OUTCOME)},
+  detail           TEXT,
+  confidence       TEXT ${checkIn('confidence', CONFIDENCE)},
+  confidence_score REAL,
+  contested        INTEGER,
+  contested_note   TEXT,
+  source_url       TEXT
 );
 
-CREATE TABLE idea_dependencies (
-  id           INTEGER PRIMARY KEY,
-  uuid         TEXT,
-  company_id   INTEGER NOT NULL REFERENCES companies(id),
-  category     TEXT ${checkIn('category', DEPENDENCY)},
-  detail       TEXT,
-  criticality  TEXT ${checkIn('criticality', CRITICALITY, false)},
-  source_url   TEXT
+-- Canonical dependency dimension: one row per real-world thing an idea needed
+-- ("battery pack price"), shared across every company that needed it. Companies
+-- attach via company_dependencies, and assessments attach here — so the "now"
+-- verdict is established once rather than re-derived per company.
+CREATE TABLE dependencies (
+  id               INTEGER PRIMARY KEY,
+  uuid             TEXT,
+  name             TEXT NOT NULL,
+  category         TEXT ${checkIn('category', DEPENDENCY)},
+  description      TEXT,
+  -- The value at which this dependency stops blocking. Populated in Tier 3; the
+  -- columns exist now so became_viable_date has somewhere to land.
+  threshold_metric TEXT,
+  threshold_value  REAL,
+  threshold_unit   TEXT
+);
+
+CREATE TABLE company_dependencies (
+  company_id    INTEGER NOT NULL REFERENCES companies(id),
+  dependency_id INTEGER NOT NULL REFERENCES dependencies(id),
+  criticality   TEXT ${checkIn('criticality', CRITICALITY, false)},
+  detail        TEXT,
+  source_url    TEXT,
+  PRIMARY KEY (company_id, dependency_id)
+);
+
+-- The "now" axis: one row per (dependency x assessed_on), each carrying its own
+-- evidence (source_url + snippet + confidence) so an automated verdict is auditable
+-- and can later be swapped for a grounded data feed without a rewrite.
+CREATE TABLE dependency_assessments (
+  id               INTEGER PRIMARY KEY,
+  uuid             TEXT,
+  dependency_id    INTEGER NOT NULL REFERENCES dependencies(id),
+  status           TEXT ${checkIn('status', ASSESSMENT_STATUS)},
+  detail           TEXT,
+  metric_name      TEXT,
+  metric_value     REAL,
+  metric_unit      TEXT,
+  assessed_on      TEXT,
+  source_url       TEXT,
+  snippet          TEXT,
+  confidence       TEXT ${checkIn('confidence', CONFIDENCE)},
+  confidence_score REAL,
+  contested        INTEGER,
+  contested_note   TEXT
+);
+
+-- Content-addressed cache of every fetched document, loaded from the on-disk cache
+-- at build time. source_type drives the freshness policy: discovery text is
+-- immutable, outcome/reassessment results expire.
+CREATE TABLE raw_documents (
+  id          INTEGER PRIMARY KEY,
+  url         TEXT,
+  url_hash    TEXT UNIQUE,
+  fetched_at  TEXT,
+  text        TEXT,
+  source_type TEXT ${checkIn('source_type', SOURCE_TYPE)}
 );
 `
