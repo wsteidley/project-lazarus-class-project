@@ -10,6 +10,7 @@ import {
   OUTCOME_TYPE,
   REGION,
   ROUND,
+  URL_TYPE,
 } from '../schemas.js'
 import { SOURCE_TYPE } from './raw-documents.js'
 
@@ -45,6 +46,12 @@ CREATE TABLE companies (
   company_name       TEXT NOT NULL,
   idea_space_id      INTEGER REFERENCES idea_spaces(id),
   founders           TEXT,
+  -- Identity keys live in company_urls (typed, one row per URL) rather than as
+  -- columns here, so a new source is a new row instead of a schema change.
+  -- Provenance of a merge: canonical_uuid is this row's surviving identity, and
+  -- merged_from lists the uuids it absorbed (empty when nothing merged).
+  canonical_uuid     TEXT,
+  merged_from        TEXT,
   location           TEXT ${checkIn('location', REGION)},
   country            TEXT,
   year_founded       INTEGER,
@@ -64,6 +71,20 @@ CREATE TABLE companies (
   is_climate         INTEGER,
   source_url         TEXT,
   created_at         TEXT
+);
+
+-- Every URL known for a company, tagged by what it points at. Replaces per-source
+-- identity columns: adding LinkedIn, a Wayback capture, or a dead-site link is a new
+-- row, not a migration. normalized_value holds the comparable form the resolve step
+-- keys on (a bare domain for websites), so the merge key is visible and queryable.
+CREATE TABLE company_urls (
+  id               INTEGER PRIMARY KEY,
+  company_id       INTEGER NOT NULL REFERENCES companies(id),
+  url_type         TEXT ${checkIn('url_type', URL_TYPE)},
+  url              TEXT NOT NULL,
+  normalized_value TEXT,
+  source_url       TEXT,
+  UNIQUE (company_id, url_type, url)
 );
 
 CREATE TABLE company_sectors (

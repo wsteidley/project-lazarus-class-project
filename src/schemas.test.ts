@@ -7,6 +7,7 @@ const validCompany = {
   is_climate: true,
   sectors: [{ name: 'Energy', is_primary: true }],
   idea_space_name: 'Long-duration grid storage',
+  urls: [{ url_type: 'website', url: 'https://acmesolar.com' }],
   location: 'North America',
   country: null,
   living_status: 'Defunct',

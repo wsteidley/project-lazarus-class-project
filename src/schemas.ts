@@ -139,6 +139,29 @@ export const challengeSchema = z.object({
     .describe('What the disagreement is, when contested; else null'),
 })
 
+// Where a URL points. `website` is the identity anchor for entity resolution;
+// `crunchbase`/`wikipedia` are the external IDs that cover notable companies;
+// `archive` holds Wayback captures, which double as a death signal for the outcome
+// pass (a site that stopped capturing is evidence the company stopped).
+export const URL_TYPE = [
+  'website',
+  'crunchbase',
+  'wikipedia',
+  'linkedin',
+  'twitter',
+  'archive',
+  'article',
+  'other',
+] as const
+
+// One URL attached to a company. A typed list rather than one column per source, so a
+// new source is a new row, not a schema change — and a company can hold several of a
+// kind (multiple archive captures, several press links).
+export const companyUrlSchema = z.object({
+  url_type: z.enum(URL_TYPE).describe('What this URL points at'),
+  url: z.string().describe('The URL or identifier as stated by the source'),
+})
+
 // One or more sectors a company sits in; exactly one should be is_primary.
 export const companySectorSchema = z.object({
   name: z.enum(SECTOR).describe('A broad climate vertical the company sits in'),
@@ -158,6 +181,9 @@ export const companyExtractionSchema = z.object({
     .describe(
       'The specific idea space this company pursued — pick the best match from the provided list, or null if none fits',
     ),
+  urls: z
+    .array(companyUrlSchema)
+    .describe('Every URL/handle a source actually states for this company; empty array if none'),
   location: z.enum(REGION).nullable().describe('High-level region the company is based in'),
   country: z.string().nullable().describe('Optional finer country location'),
   living_status: z.enum(LIVING_STATUS).describe('Current raw status of the company'),
@@ -200,6 +226,7 @@ export const companyExtractionSchema = z.object({
 })
 
 export type CompanyExtraction = z.infer<typeof companyExtractionSchema>
+export type CompanyUrl = z.infer<typeof companyUrlSchema>
 
 // step1b: idea dependencies decomposed from the article in a separate pass.
 export const ideaDependencySchema = z.object({

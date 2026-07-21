@@ -5,7 +5,7 @@ import { latestRunDir } from '../lib/paths.js'
 import { utcTimestamp } from '../lib/timestamp.js'
 import { buildChatModel } from '../llm.js'
 import { type FundingRounds, fundingRoundsSchema, ROUND } from '../schemas.js'
-import { duckDuckGoSearch, wikipediaSearch } from '../tools/search.js'
+import { gatherSearchContext } from '../tools/search.js'
 
 // Derives the 4-digit year from a YYYY-MM date; '' when undated. Keeping the full
 // year here (rather than a 2-digit MM/YY) is what avoids the century bug downstream.
@@ -17,18 +17,9 @@ const yearFromDate = (date: string | null): number | '' => {
   return match?.[1] ? Number(match[1]) : ''
 }
 
-// Best-effort web search; returns empty context rather than failing the row.
-const gatherSearchContext = async (companyName: string): Promise<string> => {
-  const [ddgResult, wikiResult] = await Promise.all([
-    duckDuckGoSearch.invoke(`${companyName} funding rounds`).catch(() => ''),
-    wikipediaSearch.invoke(companyName).catch(() => ''),
-  ])
-  return `DuckDuckGo results:\n${ddgResult}\n\nWikipedia results:\n${wikiResult}`
-}
-
 const extractFundingForCompany = async (company: CsvRow): Promise<Record<string, unknown>[]> => {
   const companyName = company.company_name ?? ''
-  const searchContext = await gatherSearchContext(companyName)
+  const searchContext = await gatherSearchContext(`${companyName} funding rounds`, companyName)
 
   const model = buildChatModel()
   const extractor = model.withStructuredOutput(fundingRoundsSchema)

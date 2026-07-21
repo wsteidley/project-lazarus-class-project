@@ -1,11 +1,48 @@
-# Project Lazarus — Open Questions After Tier 0/1
+# Project Lazarus — Build Status and Open Questions
 
-Written after building Tier 0 (canonical dependencies + `dependency_assessments` +
-the reassess pass) and Tier 1 (`raw_documents` cache + `confidence`/`contested`) from
-`dataset-sourcing-spec-v3.md`.
+Running record of what is built and what each remaining item still needs. Updated after
+v3 Tier 0/1 and v4 Phases 0/1.
 
-Each item below is something the build **deliberately deferred**, not something
-overlooked. Ordered by how much it blocks.
+## Summary
+
+**Built so far**
+
+| Round | What landed |
+| --- | --- |
+| v3 Tier 0 | Canonical `dependencies` + `company_dependencies` (`step1c`), `dependency_assessments` + the `reassess` pass |
+| v3 Tier 1 | `raw_documents` content-addressed cache with two-tier freshness; `confidence` / `contested` on judged rows |
+| v4 Phase 0 | Tiered search backbone — Tavily primary, DuckDuckGo fallback, one shared `gatherSearchContext` |
+| v4 Phase 1 | Company entity resolution (`resolve`), ID-first over a typed `company_urls` table |
+
+**Where each open item stands**
+
+| # | Item | Status | Blocking |
+| --- | --- | --- | --- |
+| 7 | Retrospective outcome pass | Not built — **the binding constraint** | Trustworthy outcomes, and everything derived from them |
+| 1 | Coverage + targeted discovery | Approach decided (v4), not built | True `white_space` vs `unsampled` |
+| 4 | `confidence_score` | Design decided (v4), column null | Nothing yet; needed before confidence is trusted |
+| 2 | Threshold values | Columns built, values mostly empty | `became_viable_date` (Tier 3) |
+| 3 | `flared_out` | Decided (v4): trajectory-derived, view-only | Tier 2 typology |
+| 5 | Fuzzy company matching | ID-first built; Splink deferred | Nothing — gated on real near-miss counts |
+| 6 | Incremental scraping flag | Specced, not built | Multi-batch corpus building |
+
+**The one thing to decide next.** Item 7 is the binding constraint and v4 already says
+so: the dependency axis is now evidenced, the outcome axis is still inferred from launch
+articles. Items 2 and 3 refine a gap typology whose *inputs* remain unreliable until 7
+lands, so building them first buys precision on top of weak data.
+
+**Two measurements to take on the first real run**, both cheap and both decide a build:
+- `SELECT url_type, COUNT(*) FROM company_urls GROUP BY url_type` — if identity URLs are
+  rare, entity resolution is running on the weak `name_year` tier (item 5).
+- The near-miss count printed by `npm run resolve` — the trigger for whether Splink is
+  worth a two-language repo (item 5).
+
+**Operational dependency added:** `TAVILY_API_KEY`. Search degrades silently to
+DuckDuckGo when absent, so a missing secret costs recall rather than breaking a run. Exa
+is deliberately not in this chain; v4 keeps it for Phase 5 discovery.
+
+Each item below was **deliberately deferred**, not overlooked. Where v4 has since locked
+a decision, the item records it — those need building, not researching.
 
 ---
 
@@ -24,17 +61,17 @@ a hole in the data reads as a discovery.
 This matters more than it sounds, because the whole "absence is signal" thesis rests
 on telling a genuine gap from an unsampled one.
 
-**To research:**
-- Is a per-idea_space discovery mode worth building — issuing queries derived from the
-  `idea_spaces` seed, so "searched this space, found nothing" becomes a real record?
-  What source would it query, given DuckDuckGo's rate limits?
-- If not: is *observed density* (article/company count per idea_space × era, derived at
-  build time) an honest enough confidence proxy? It can't distinguish "looked and found
-  nothing" from "never looked" — is that acceptable, and how should the gap view label
-  the difference so nobody over-reads it?
-- What era boundaries? Fixed cutoffs (≤2013 / 2014-2020 / 2021+) are simpler than
-  per-idea_space ones and probably sufficient — worth confirming against the cleantech
-  1.0 boom-bust dating.
+**v4 decided this — it needs building, not researching.** Two phases:
+- **Now (v4 Phase 3):** ship the *honest proxy* — observed density (company/article
+  count per idea_space × era) as the confidence signal, fixed era cutoffs
+  (≤2013 / 2014–2020 / 2021+, first boundary on the cleantech 1.0 bust), and **label
+  every empty space `unsampled`, never `white_space`**. Absence resolves to "unknown".
+- **Later (v4 Phase 5):** Exa targeted discovery, queried per idea_space from its
+  description, writes a real `coverage` row and promotes searched-and-empty spaces to
+  a true `white_space`.
+
+**Still open:** nothing blocking. The proxy holds the line until Exa lands, so no
+false gap can appear in the meantime.
 
 ## 2. Threshold values (blocks `became_viable_date`, Tier 3)
 
@@ -46,15 +83,22 @@ The derived payoff — ranking Lazarus candidates by *how overdue* they are
 (`became_viable_date` vs. the year the last attempt died) — is only as trustworthy as
 these numbers.
 
-**To research:**
-- Where does each threshold come from, with a citation? A number without provenance
-  will quietly decide which ideas look "viable now."
-- Several dependencies have no single scalar threshold at all ("Contract manufacturing
-  capacity", "Specialist engineering talent"). Do those get a qualitative
-  `status`-only assessment, or should the canonical list be split so every row either
-  has a metric or is explicitly marked unmeasurable?
-- Should thresholds be time-varying? "$100/kWh" is the bar today; the bar a 2008
-  company needed to clear may be different from the bar that makes the idea work now.
+**v4 decided the structure.** A `threshold_kind` three-way split so a blank is never
+ambiguous: `quantitative_with_threshold` (metric + value + unit + citation),
+`quantitative_tbd` (measurable, number not yet set), `qualitative` (no scalar —
+status-only). Only the first yields a `became_viable_date`. ~10 **hero dependencies**
+get hand-curated cited thresholds and pull their current value from a **data feed**
+(Our World in Data), removing the hallucination surface; the long tail rides the
+LLM+search path. Any LLM-proposed number is stored flagged low-confidence, never as
+curated. `became_viable` v1 is the earliest *observed* crossing; Wright's-Law
+projection is explicitly v2.
+
+**Still open:**
+- The hero list itself, and a cited source per threshold value. A number without
+  provenance quietly decides which ideas look "viable now."
+- Is the threshold time-varying? v4 treats it as a fixed viability bar (the physics or
+  economics of whether the idea works) with the *metric* moving — worth confirming that
+  holds for cases where the bar itself has shifted.
 
 ## 3. `flared_out` (Tier 2 gap typology)
 
@@ -62,42 +106,68 @@ these numbers.
 `OUTCOME_TYPE` ([src/schemas.ts](src/schemas.ts)) has no such value, and peak-then-collapse
 is a *trajectory*, not a terminal label. You chose to derive it from trajectory instead.
 
-**To research:**
-- What's the operational definition? Candidate: raised above some threshold, or reached
-  a late round, then `year_defunct` within N years of the last round. Both numbers are
-  judgment calls, and `funding_rounds` coverage is uneven.
-- Does it belong as a derived column next to `outcome_type` (mirroring
-  [derive-outcome.ts](src/lib/derive-outcome.ts)), or only inside the gap-typology view?
+**v4 decided placement.** It lives in the **gap-typology view only**, not as a column
+beside `outcome_type` — it is a pattern over rounds plus death, not a terminal label,
+and duplicating it invites drift. Definition: reached a late or large round, then
+`year_defunct` within N years of the last round, **gated on `confidence`** because
+uneven `funding_rounds` coverage makes a call on one known round a guess.
+
+**Still open:** `N`, and what counts as "late or large".
 
 ## 4. `confidence_score` (deferred by design)
 
 **Status: column built, always null.** `confidence` labels are self-reported by the LLM;
 the numeric score is reserved for when confidence is *computed* from signals.
 
-**To research:**
-- Which signals — corroborating source count, source authority ranking, cross-source
-  agreement? The reassess pass already stores `source_url` + `snippet` per assessment,
-  which is the raw material.
-- What cutoffs map a 0-1 score onto the four labels, and does a computed score override
-  a self-reported label or sit beside it?
-- Worth checking empirically whether LLM self-reported confidence correlates with
-  anything at all before investing in the computed version.
+**v4 decided the machinery**, landing with the outcome pass (item 7):
+- **Computed score is authoritative; the label is derived from it** by fixed cutoffs
+  (≥0.8 high, 0.5–0.8 medium, 0.2–0.5 low, else unknown). The self-reported label keeps
+  its **own separate column** — an unvalidated self-report is never blended into the
+  computed score.
+- **Signal tiers, cheapest first:** cross-source agreement (near-free from retrieval
+  already happening, and it also sets `contested`); self-consistency sampling for
+  uncorroborated enum judgments; semantic/numeric spread for free-text and metrics.
+- **`unknown` is a defined terminal state** with a reason code — queryable, never blank,
+  never a stop. No path waits for a human.
 
-## 5. Company entity resolution (still unbuilt)
+**Still open:**
+- Whether self-reported confidence correlates with anything at all. v4's side-quest
+  answers this self-supervised: score against ground truth the pipeline already trusts
+  (Wayback/dead-domain death signals, seed-corpus facts) and **measure discrimination
+  (AUROC), not calibration**. That test is what promotes or discards the self-reported
+  label.
 
-**Status: not built; the principle is now applied to dependencies but not companies.**
-Tier 0 canonicalized *dependencies*; companies are still one-article-one-row.
+## 5. Company entity resolution — BUILT (ID-first); fuzzy matching still open
 
-Sourcing v1 established the rule — merge before enrichment, never after — and the
-ordering: resolve before the outcome pass, so one retrospective search runs per
-canonical company rather than per duplicate.
+**Status: built in TypeScript, ID-first.** `npm run resolve`
+([resolve-companies.ts](src/steps/resolve-companies.ts)) merges over the typed
+`company_urls` table: `website` domain → `crunchbase` → `wikipedia` → normalized name +
+founding year, using [entity-resolution.ts](src/lib/entity-resolution.ts). Identity
+lives in a typed URL table rather than per-source columns, so adding LinkedIn, a
+Wayback capture, or a dead-site link is a new row rather than a migration — and
+`archive` URLs are already there for the outcome pass to use as a death signal.
 
-**To research:**
-- Canonical key definition: normalized name + website domain, with founders/founding-year
-  as tiebreakers. What match score auto-merges, and what queues for review?
-- **Note a live coupling:** `dedupeFundingRows` keys on `(company_uuid, round_name)`
-  ([src/lib/funding.ts](src/lib/funding.ts)). Those uuids must become post-merge
-  canonical ones, or funding dedupe silently under-merges once companies are merged.
+**Two things this closed:**
+- **The funding coupling is closed structurally, not patched.** `resolve` runs *before*
+  step2, so funding rows are only ever generated against canonical uuids — there is no
+  pre-merge uuid left at the `dedupeFundingRows` site to key on.
+- **The Splink decision now has evidence instead of a guess.** Every run prints merges
+  by key tier plus a **near-miss report**: distinct canonical companies sharing a
+  normalized name that ID-first refused to merge.
+
+**Still open — decide from the near-miss numbers:**
+- Is probabilistic linkage (Splink on SQLite, per v4 Phase 1) worth the two-language
+  repo? **The trigger is the near-miss count on real data.** If it stays near zero,
+  ID-first was sufficient and the Python toolchain is avoidable; if it is large, the
+  fuzzy tier is earning its keep. Note `uv` is not currently installed.
+- **How often does extraction actually produce a `website` URL?** ID-first is only as
+  good as its keys, and Crunchbase's `permalink`/`website_url` only reach the prompt
+  when Crunchbase enrichment is on. If most companies have no identity URL, merges fall
+  to the weak `name_year` tier — measure this on the first real run, e.g.
+  `SELECT url_type, COUNT(*) FROM company_urls GROUP BY url_type`.
+- What should queue for human review rather than auto-merge? Nothing queues today;
+  every group merges automatically, with `merged_from` making it auditable after
+  the fact.
 
 ## 6. Incremental scraping supplement flag (specced, not built)
 
@@ -109,12 +179,13 @@ accumulate instead of replacing each other.
 and is the function the dedupe-on-concatenate should use — it was written shared for
 exactly this reason.
 
-**To research:**
-- Flag shape: an env var (`SCRAPE_APPEND=1`) matches the existing `SCRAPE_URL` style.
-- How far back do TechCrunch archives stay parseable with the current selectors? This is
-  the one genuinely open scoping question, now that year range is a batching parameter
-  rather than a filter.
-- Does the `_data_index.csv` companion need the same treatment, or can it be regenerated?
+**v4 settled the shape:** `SCRAPE_APPEND=1` (matching the `SCRAPE_URL` style), dedupe on
+concatenate by `url` through the shared `normalizeUrl`, and `_data_index.csv` regenerated
+rather than merged.
+
+**Still open — one empirical unknown:** how far back the current TechCrunch selectors
+actually parse. Probe a ~2009 tag page. This rises the moment you commit to the
+cleantech 1.0 window.
 
 ## 7. The retrospective outcome pass (v1's highest-leverage item, still unbuilt)
 
@@ -126,9 +197,23 @@ describe a moment before the outcome existed.
 The `raw_documents` cache now has an `outcome` `source_type` reserved and a TTL policy
 waiting for it, so the plumbing is ready.
 
-**To research:**
-- This arguably outranks all of Tier 2/3 for data quality. Worth deciding explicitly
-  whether it jumps the queue.
-- How does it interact with `derive`? Once outcomes are evidenced rather than inferred,
-  the age/funding heuristics in `derive-outcome.ts` become a fallback — which source
-  wins on conflict needs stating.
+**v4 promoted it to the binding constraint and decided the approach:**
+- **Seed, don't rehost.** Ingest failed-company *names + minimal lifecycle facts* from
+  open compilations as a **to-research list**, never as finished data, with provenance
+  recorded. Curated prose stays out.
+- **Evidence every field from storable sources** — the company's own defunct site,
+  Wayback captures, news fetched into `raw_documents` under the reserved `outcome`
+  source_type. Corroborate with cheap deterministic death signals: dead domain, Wayback
+  last-successful-capture date (which doubles as the death-date estimate the
+  overdue-ness calculation needs), funding staleness.
+- **Precedence is directional.** Evidenced outcome **wins**; `derive-outcome.ts` drops
+  to fallback, filling only where the outcome pass returned nothing and **never
+  overriding evidence**. When the heuristic fires it is recorded as low `confidence`
+  with a note, so "guessed from funding staleness" stays queryable and distinct from
+  "a 2021 obituary said so."
+
+**Ready for it:** `raw_documents` already reserves the `outcome` source_type with a TTL,
+and `company_urls` already carries an `archive` type for Wayback captures.
+
+**Still open:** whether to take the licensed scale path (Crunchbase API / CB Insights)
+if this becomes central.

@@ -43,17 +43,31 @@ The stages are:
 - **step1** — extract structured company info from each article with an LLM
   (optionally Crunchbase-enriched), mapping each company into the curated
   `data/idea_spaces.csv`. Writes `data/companies.csv`, `data/company_sectors.csv`
-  (a company can span several sectors), and `data/challenges.csv` (each challenge
+  (a company can span several sectors), `data/challenges.csv` (each challenge
   tagged fatal / overcome / pivoted_from / ongoing, each with a `confidence` level
-  and a `contested` flag for when sources disagree).
+  and a `contested` flag for when sources disagree), and `data/company_urls.csv` —
+  every URL a source states, tagged by type (`website`, `crunchbase`, `wikipedia`,
+  `archive`, …). URLs are a typed table rather than one column per source, so adding
+  a source is a new row instead of a schema change.
 - **step1b** — a separate LLM pass decomposing each idea into its dependencies.
   Writes `data/idea_dependencies.csv` (free text, one row per company).
 - **step1c** — resolves those free-text dependencies onto the curated canonical list
   in `data/input/dependencies.csv`, merging duplicates per company. Writes
   `company_dependencies.csv`. Anything that matches nothing canonical is kept with a
   blank name and reported, never silently dropped — add it to the seed and re-run.
-- **step2** — find funding-round data per company via web search (DuckDuckGo +
-  Wikipedia) + the LLM, one row per round. Writes `data/funding_rounds.csv`.
+- **resolve** — merges duplicate companies into canonical rows, ID-first over
+  `company_urls`: `website` domain → `crunchbase` → `wikipedia` → normalized name +
+  founding year. Non-identity URL types (`article`, `linkedin`, …) are never merge
+  keys — a shared press link says nothing about two companies being the same. Rewrites
+  `companies.csv`, re-points and de-duplicates every child table's `company_uuid` (a
+  merged company ends up with the *union* of its duplicates' URLs), and writes
+  `company_uuid_map.csv` for provenance. Runs **before** funding on purpose, so rounds
+  are only ever attached to canonical companies. Reports merges by key tier plus
+  near-miss pairs (same name, no shared key) — the evidence for whether probabilistic
+  matching is worth adding later.
+- **step2** — find funding-round data per company via tiered web search (Tavily,
+  falling back to DuckDuckGo) + Wikipedia + the LLM, one row per round. Writes
+  `data/funding_rounds.csv`.
 - **step3** — deterministic cleanup: standardize dates to `YYYY-MM` (4-digit year),
   derive `round_year`, de-duplicate rounds. Rewrites `data/funding_rounds.csv`.
 - **derive** — deterministic derivation of each company's `outcome_type` +
@@ -128,6 +142,8 @@ Environment variables (see `.env.example`):
 - `OPENAI_API_KEY` — when `PROVIDER=openai`
 - `LLAMA_BASE_URL` — when `PROVIDER=ollama`, e.g. `http://localhost:11434`
 - `CRUNCHBASE_API_KEY` — optional, enables Crunchbase enrichment in step1
+- `TAVILY_API_KEY` — optional; primary web-search provider. Without it, search
+  silently falls back to DuckDuckGo (lower recall, rate-limited, but never fails)
 - `SCRAPE_URL` — the TechCrunch listing URL for step0
 - `DATA_DIR` — root data dir (default `./data`)
 - `INPUT_FILE` — optional override of the auto-selected scrape (step1/step1b)
@@ -147,6 +163,7 @@ $ SCRAPE_URL=https://techcrunch.com/tag/climate  npm run step0   # -> data/scrap
 $ npm run step1      # latest scrape -> new data/output/<run>/
 $ npm run step1b
 $ npm run step1c     # free-text dependencies -> canonical ones
+$ npm run resolve    # merge duplicate companies (before any enrichment)
 $ npm run step2
 $ npm run step3
 $ npm run derive     # compute outcome_type from the signals

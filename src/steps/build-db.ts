@@ -43,6 +43,7 @@ const main = async (): Promise<void> => {
     throw new Error(`No companies.csv in ${runDir}; run step1 first`)
   }
   const ideaSpaces = await readCsvIfExists(inputFile('idea_spaces.csv'))
+  const companyUrls = await readCsvIfExists(join(runDir, 'company_urls.csv'))
   const companySectors = await readCsvIfExists(join(runDir, 'company_sectors.csv'))
   const fundingRounds = await readCsvIfExists(join(runDir, 'funding_rounds.csv'))
   const challenges = await readCsvIfExists(join(runDir, 'challenges.csv'))
@@ -86,11 +87,12 @@ const main = async (): Promise<void> => {
   // companies: resolve idea_space_name -> id; capture uuid -> id.
   const insertCompany = db.prepare(
     `INSERT INTO companies
-      (uuid, company_name, idea_space_id, founders, location, country, year_founded,
-       year_defunct, living_status, has_pivoted, idea_summary, exit_type, exit_amount,
-       exit_date, exit_notes, outcome_summary, outcome_source_url, outcome_type,
-       outcome_rationale, original_trl, is_climate, source_url, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      (uuid, company_name, idea_space_id, founders, canonical_uuid, merged_from,
+       location, country, year_founded, year_defunct, living_status, has_pivoted,
+       idea_summary, exit_type, exit_amount, exit_date, exit_notes, outcome_summary,
+       outcome_source_url, outcome_type, outcome_rationale, original_trl, is_climate,
+       source_url, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   )
   const idByUuid = new Map<string, number>()
   for (const row of companies) {
@@ -99,6 +101,8 @@ const main = async (): Promise<void> => {
       toText(row.company_name) ?? '',
       ideaSpaceIdByName.get(row.idea_space_name ?? '') ?? null,
       toText(row.founders),
+      toText(row.canonical_uuid),
+      toText(row.merged_from),
       toText(row.location),
       toText(row.country),
       toInt(row.year_founded),
@@ -126,6 +130,27 @@ const main = async (): Promise<void> => {
 
   const companyIdFor = (row: CsvRow): number | undefined => idByUuid.get(row.company_uuid ?? '')
   let skipped = 0
+
+  // company_urls: typed identity/reference URLs. UNIQUE(company_id, url_type, url)
+  // absorbs any repeats the resolve step did not already collapse.
+  const insertCompanyUrl = db.prepare(
+    `INSERT OR IGNORE INTO company_urls (company_id, url_type, url, normalized_value, source_url)
+     VALUES (?, ?, ?, ?, ?)`,
+  )
+  for (const row of companyUrls) {
+    const companyId = companyIdFor(row)
+    if (companyId === undefined) {
+      skipped += 1
+      continue
+    }
+    insertCompanyUrl.run(
+      companyId,
+      toText(row.url_type),
+      toText(row.url) ?? '',
+      toText(row.normalized_value),
+      toText(row.source_url),
+    )
+  }
 
   // company_sectors: resolve company_uuid + sector_name.
   const insertCompanySector = db.prepare(
@@ -282,7 +307,8 @@ const main = async (): Promise<void> => {
 
   console.log(
     `Built ${dbFile}: ${SECTOR.length} sectors, ${ideaSpaces.length} idea_spaces, ` +
-      `${companies.length} companies, ${companySectors.length} company_sectors, ` +
+      `${companies.length} companies, ${companyUrls.length} company_urls, ` +
+      `${companySectors.length} company_sectors, ` +
       `${fundingRounds.length} funding_rounds, ${challenges.length} challenges, ` +
       `${dependencies.length} dependencies, ${companyDependencies.length} company_dependencies, ` +
       `${assessments.length} dependency_assessments, ${rawDocuments.length} raw_documents` +

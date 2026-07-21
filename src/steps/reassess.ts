@@ -11,20 +11,15 @@ import {
   type DependencyAssessment,
   dependencyAssessmentSchema,
 } from '../schemas.js'
-import { duckDuckGoSearch, wikipediaSearch } from '../tools/search.js'
+import { gatherSearchContext } from '../tools/search.js'
 
-// Best-effort web search dated to now; returns empty context rather than failing the
-// row. Mirrors gatherSearchContext in step2.
-const gatherSearchContext = async (dependency: CsvRow): Promise<string> => {
+// Search dated to now, so the verdict reflects where the dependency stands today
+// rather than when companies first depended on it.
+const searchContextFor = (dependency: CsvRow): Promise<string> => {
   const name = dependency.name ?? ''
   const metric = dependency.threshold_metric ?? ''
   const query = metric ? `${name} ${metric} current cost trend` : `${name} current status trend`
-
-  const [ddgResult, wikiResult] = await Promise.all([
-    duckDuckGoSearch.invoke(query).catch(() => ''),
-    wikipediaSearch.invoke(name).catch(() => ''),
-  ])
-  return `DuckDuckGo results:\n${ddgResult}\n\nWikipedia results:\n${wikiResult}`
+  return gatherSearchContext(query, name)
 }
 
 const buildPrompt = (dependency: CsvRow, searchContext: string, today: string): string =>
@@ -43,7 +38,7 @@ const assessDependency = (
   assessedOn: string,
 ): ((dependency: CsvRow) => Promise<Record<string, unknown> | null>) => {
   return async (dependency: CsvRow): Promise<Record<string, unknown> | null> => {
-    const searchContext = await gatherSearchContext(dependency)
+    const searchContext = await searchContextFor(dependency)
 
     const model = buildChatModel()
     const extractor = model.withStructuredOutput(dependencyAssessmentSchema)

@@ -32,6 +32,10 @@ export const config = {
   // (launch articles are immutable); outcome/reassessment results expire, because a
   // company alive today may fold next year.
   cacheTtlDays: Number(process.env.CACHE_TTL_DAYS ?? '30'),
+  // Primary search provider. Optional on purpose: with no key the search backbone
+  // degrades to DuckDuckGo rather than failing, so a missing secret costs recall,
+  // not a broken run.
+  tavilyApiKey: process.env.TAVILY_API_KEY ?? '',
 }
 
 // Scoped data areas: curated input (tracked), raw scrapes, and timestamped run

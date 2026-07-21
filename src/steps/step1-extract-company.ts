@@ -9,11 +9,12 @@ import { buildChatModel } from '../llm.js'
 import { type CompanyExtraction, companyExtractionSchema } from '../schemas.js'
 import { crunchbaseCompanySearch } from '../tools/crunchbase.js'
 
-// The three table CSVs step1 produces, linked to the company by uuid.
+// The table CSVs step1 produces, linked to the company by uuid.
 type CompanyResult = {
   company: Record<string, unknown>
   sectors: Record<string, unknown>[]
   challenges: Record<string, unknown>[]
+  urls: Record<string, unknown>[]
 }
 
 const bit = (value: boolean | null): 0 | 1 | '' => (value === null ? '' : value ? 1 : 0)
@@ -38,7 +39,7 @@ const buildPrompt = (
   article: CsvRow,
   ideaSpaceList: string,
   crunchbaseContext: string,
-): string => `You are a helpful data processor and extractor. Extract structured information about the company described in the article, using the required schema. Leave a field null if the article does not support a value. Record every notable challenge the company faced with its outcome (fatal / overcome / pivoted_from / ongoing) — this applies to survivors as well as failures. For each challenge also rate your confidence in it (unknown / low / medium / high) based on how directly the article supports it, and set contested=true only if the article itself reports conflicting accounts. Capture any exit event (acquisition/ipo/shutdown) in the exit_* fields, separate from funding. Assign one or more sectors, marking exactly one is_primary.
+): string => `You are a helpful data processor and extractor. Extract structured information about the company described in the article, using the required schema. Leave a field null if the article does not support a value. Record every notable challenge the company faced with its outcome (fatal / overcome / pivoted_from / ongoing) — this applies to survivors as well as failures. For each challenge also rate your confidence in it (unknown / low / medium / high) based on how directly the article supports it, and set contested=true only if the article itself reports conflicting accounts. Capture any exit event (acquisition/ipo/shutdown) in the exit_* fields, separate from funding. In urls, record every URL the sources actually state for the company (its own website, Crunchbase, Wikipedia, LinkedIn, etc.), each tagged with its type. Only include URLs a source really gives — these are used to merge duplicate companies, so an invented URL wrongly fuses two different companies; return an empty array when none are stated. Assign one or more sectors, marking exactly one is_primary.
 
 Choose idea_space_name from this curated list (or null if none genuinely fits):
 ${ideaSpaceList}
@@ -91,6 +92,9 @@ const extractCompany = (
       company_name: extracted.company_name,
       idea_space_name: ideaSpaceName,
       founders: extracted.founders,
+      // Filled by the resolve step; a company is its own canonical row until merged.
+      canonical_uuid: '',
+      merged_from: '',
       location: extracted.location,
       country: extracted.country,
       year_founded: extracted.year_founded,
@@ -131,7 +135,18 @@ const extractCompany = (
       source_url: sourceUrl,
     }))
 
-    return { company, sectors, challenges }
+    const urls = extracted.urls
+      .filter((entry) => entry.url?.trim())
+      .map((entry) => ({
+        company_uuid: uuid,
+        url_type: entry.url_type,
+        url: entry.url.trim(),
+        // Comparable form, filled by the resolve step (bare domain for websites).
+        normalized_value: '',
+        source_url: sourceUrl,
+      }))
+
+    return { company, sectors, challenges, urls }
   }
 }
 
@@ -171,6 +186,11 @@ const main = async (): Promise<void> => {
     results.flatMap((result) => result.challenges),
     runDir,
     'challenges.csv',
+  )
+  await writeTableCsv(
+    results.flatMap((result) => result.urls),
+    runDir,
+    'company_urls.csv',
   )
   console.log(`Run folder: ${runDir}`)
   console.log('\nDONE\n')

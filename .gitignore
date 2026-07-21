@@ -173,3 +173,4 @@ npm-debug.log*
 # data/input/ (the curated idea_spaces seed) is intentionally NOT ignored.
 data/scraped/
 data/output/
+data/kaggle/
