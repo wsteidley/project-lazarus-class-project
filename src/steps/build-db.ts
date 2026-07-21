@@ -4,10 +4,10 @@ import { DatabaseSync } from 'node:sqlite'
 import { config } from '../config.js'
 import { type CsvRow, readCsv } from '../lib/csv.js'
 import { createTablesSql } from '../lib/db-schema.js'
+import { SECTOR } from '../schemas.js'
 
 const dbFile = process.env.DB_FILE ?? 'lazarus.db'
 
-// Coerce CSV string cells to the types SQLite expects: '' -> null.
 const toText = (value: string | undefined): string | null =>
   value === undefined || value === '' ? null : value
 const toInt = (value: string | undefined): number | null => {
@@ -18,8 +18,6 @@ const toInt = (value: string | undefined): number | null => {
   return Number.isFinite(parsed) ? Math.trunc(parsed) : null
 }
 
-// Reads a table CSV from DATA_DIR, or returns [] (with a note) if it doesn't exist
-// so a partial pipeline run still builds what's available.
 const readTableIfExists = async (tableFilename: string): Promise<CsvRow[]> => {
   const fullPath = join(config.dataDir, tableFilename)
   if (!existsSync(fullPath)) {
@@ -34,33 +32,59 @@ const main = async (): Promise<void> => {
   if (companies.length === 0) {
     throw new Error(`No companies.csv in ${config.dataDir}; run step1 first`)
   }
+  const ideaSpaces = await readTableIfExists('idea_spaces.csv')
+  const companySectors = await readTableIfExists('company_sectors.csv')
   const fundingRounds = await readTableIfExists('funding_rounds.csv')
-  const failureReasons = await readTableIfExists('failure_reasons.csv')
+  const challenges = await readTableIfExists('challenges.csv')
   const ideaDependencies = await readTableIfExists('idea_dependencies.csv')
 
-  // Fresh build every time — drop the old file so the run is idempotent.
   if (existsSync(dbFile)) {
     rmSync(dbFile)
   }
   const db = new DatabaseSync(dbFile)
+  db.exec('PRAGMA foreign_keys = ON')
   db.exec(createTablesSql())
 
-  // companies first, capturing the assigned integer id per uuid.
+  // sectors: reference rows seeded from the vocab. name -> id.
+  const insertSector = db.prepare('INSERT INTO sectors (name) VALUES (?)')
+  const sectorIdByName = new Map<string, number>()
+  for (const name of SECTOR) {
+    const info = insertSector.run(name)
+    sectorIdByName.set(name, Number(info.lastInsertRowid))
+  }
+
+  // idea_spaces: curated seed. Resolve home sector by name. name -> id.
+  const insertIdeaSpace = db.prepare(
+    'INSERT INTO idea_spaces (name, sector_id, description) VALUES (?, ?, ?)',
+  )
+  const ideaSpaceIdByName = new Map<string, number>()
+  for (const row of ideaSpaces) {
+    const info = insertIdeaSpace.run(
+      toText(row.name) ?? '',
+      sectorIdByName.get(row.sector_name ?? '') ?? null,
+      toText(row.description),
+    )
+    if (row.name) {
+      ideaSpaceIdByName.set(row.name, Number(info.lastInsertRowid))
+    }
+  }
+
+  // companies: resolve idea_space_name -> id; capture uuid -> id.
   const insertCompany = db.prepare(
     `INSERT INTO companies
-      (uuid, company_name, founders, sector, subsector, location, country,
-       year_founded, year_defunct, living_status, has_pivoted, idea_summary,
-       original_trl, is_climate, source_url, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      (uuid, company_name, idea_space_id, founders, location, country, year_founded,
+       year_defunct, living_status, has_pivoted, idea_summary, exit_type, exit_amount,
+       exit_date, exit_notes, outcome_summary, outcome_source_url, outcome_type,
+       outcome_rationale, original_trl, is_climate, source_url, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   )
   const idByUuid = new Map<string, number>()
   for (const row of companies) {
     const info = insertCompany.run(
       toText(row.uuid),
       toText(row.company_name) ?? '',
+      ideaSpaceIdByName.get(row.idea_space_name ?? '') ?? null,
       toText(row.founders),
-      toText(row.sector),
-      toText(row.subsector),
       toText(row.location),
       toText(row.country),
       toInt(row.year_founded),
@@ -68,6 +92,14 @@ const main = async (): Promise<void> => {
       toText(row.living_status),
       toInt(row.has_pivoted),
       toText(row.idea_summary),
+      toText(row.exit_type),
+      toInt(row.exit_amount),
+      toText(row.exit_date),
+      toText(row.exit_notes),
+      toText(row.outcome_summary),
+      toText(row.outcome_source_url),
+      toText(row.outcome_type),
+      toText(row.outcome_rationale),
       toInt(row.original_trl),
       toInt(row.is_climate),
       toText(row.source_url),
@@ -78,10 +110,23 @@ const main = async (): Promise<void> => {
     }
   }
 
-  // Resolve a child row's company_uuid -> integer company_id; null if unknown.
   const companyIdFor = (row: CsvRow): number | undefined => idByUuid.get(row.company_uuid ?? '')
-
   let skipped = 0
+
+  // company_sectors: resolve company_uuid + sector_name.
+  const insertCompanySector = db.prepare(
+    'INSERT OR IGNORE INTO company_sectors (company_id, sector_id, is_primary) VALUES (?, ?, ?)',
+  )
+  for (const row of companySectors) {
+    const companyId = companyIdFor(row)
+    const sectorId = sectorIdByName.get(row.sector_name ?? '')
+    if (companyId === undefined || sectorId === undefined) {
+      skipped += 1
+      continue
+    }
+    insertCompanySector.run(companyId, sectorId, toInt(row.is_primary))
+  }
+
   const insertFunding = db.prepare(
     `INSERT INTO funding_rounds
       (company_id, round_name, amount, currency, round_date, round_year, source_url)
@@ -104,16 +149,22 @@ const main = async (): Promise<void> => {
     )
   }
 
-  const insertFailure = db.prepare(
-    `INSERT INTO failure_reasons (company_id, category, detail, source_url) VALUES (?, ?, ?, ?)`,
+  const insertChallenge = db.prepare(
+    'INSERT INTO challenges (company_id, category, outcome, detail, source_url) VALUES (?, ?, ?, ?, ?)',
   )
-  for (const row of failureReasons) {
+  for (const row of challenges) {
     const companyId = companyIdFor(row)
     if (companyId === undefined) {
       skipped += 1
       continue
     }
-    insertFailure.run(companyId, toText(row.category), toText(row.detail), toText(row.source_url))
+    insertChallenge.run(
+      companyId,
+      toText(row.category),
+      toText(row.outcome),
+      toText(row.detail),
+      toText(row.source_url),
+    )
   }
 
   const insertDependency = db.prepare(
@@ -140,9 +191,11 @@ const main = async (): Promise<void> => {
   db.close()
 
   console.log(
-    `Built ${dbFile}: ${companies.length} companies, ${fundingRounds.length} funding_rounds, ` +
-      `${failureReasons.length} failure_reasons, ${ideaDependencies.length} idea_dependencies` +
-      (skipped ? ` (${skipped} child rows skipped — unknown company_uuid)` : ''),
+    `Built ${dbFile}: ${SECTOR.length} sectors, ${ideaSpaces.length} idea_spaces, ` +
+      `${companies.length} companies, ${companySectors.length} company_sectors, ` +
+      `${fundingRounds.length} funding_rounds, ${challenges.length} challenges, ` +
+      `${ideaDependencies.length} idea_dependencies` +
+      (skipped ? ` (${skipped} child rows skipped — unresolved FK)` : ''),
   )
   console.log('\nDONE\n')
 }

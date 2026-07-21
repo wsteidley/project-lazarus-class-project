@@ -48,7 +48,9 @@ export const ROUND = [
 ] as const
 
 // CB Insights post-mortem taxonomy + capital-intensive climate-hardtech causes.
-export const FAILURE = [
+// v2 reframe: a "challenge" is as much what a survivor overcame as what killed a
+// failure — the category list is unchanged; the outcome field carries the verdict.
+export const CHALLENGE = [
   'No Market Need',
   'Poor Product-Market Fit',
   'Bad Timing (Ahead of Market)',
@@ -68,6 +70,26 @@ export const FAILURE = [
   'Other',
 ] as const
 
+// Whether a challenge was fatal or cleared.
+export const CHALLENGE_OUTCOME = ['fatal', 'overcome', 'pivoted_from', 'ongoing'] as const
+
+// The success/failure judgment (derived — see derive-outcome.ts), distinct from
+// the raw living_status.
+export const OUTCOME_TYPE = [
+  'Breakout Success',
+  'Solid Success',
+  'Successful Exit',
+  'Soft Landing',
+  'Struggling / Zombie',
+  'Failed',
+  'Too Early to Tell',
+  'Unknown',
+] as const
+
+// Terminal liquidity event, captured separately from funding so "total raised"
+// stays clean.
+export const EXIT_TYPE = ['acquisition', 'ipo', 'shutdown', 'none', 'unknown'] as const
+
 // What the idea leaned on — bottlenecks the community tracks.
 export const DEPENDENCY = [
   'Input / Commodity Cost',
@@ -84,24 +106,38 @@ export const DEPENDENCY = [
 
 export const CRITICALITY = ['was_blocking', 'contributing'] as const
 
-// step1: structured company info + failure reasons extracted from a single article.
-export const failureReasonSchema = z.object({
-  category: z.enum(FAILURE).describe('Controlled failure category'),
-  detail: z.string().nullable().describe('The specific, free-text story for this failure'),
+// step1: structured company info + challenges extracted from a single article.
+// A challenge applies to survivors and failures alike; the outcome carries which.
+export const challengeSchema = z.object({
+  category: z.enum(CHALLENGE).describe('Controlled challenge category'),
+  outcome: z
+    .enum(CHALLENGE_OUTCOME)
+    .describe("Whether it was 'fatal', 'overcome', 'pivoted_from', or still 'ongoing'"),
+  detail: z.string().nullable().describe('The specific, free-text story for this challenge'),
+})
+
+// One or more sectors a company sits in; exactly one should be is_primary.
+export const companySectorSchema = z.object({
+  name: z.enum(SECTOR).describe('A broad climate vertical the company sits in'),
+  is_primary: z.boolean().describe('True for the single main vertical'),
 })
 
 export const companyExtractionSchema = z.object({
   company_name: z.string().describe('Name of the company'),
   founders: z.string().nullable().describe('CSV string of founder names'),
   is_climate: z.boolean().describe('Whether the company is climate-related'),
-  sector: z
-    .enum(SECTOR)
+  sectors: z
+    .array(companySectorSchema)
+    .describe('One or more broad verticals; mark exactly one is_primary'),
+  idea_space_name: z
+    .string()
     .nullable()
-    .describe('High-level climate vertical; null if not climate-related or unclear'),
-  subsector: z.string().nullable().describe('Optional finer free-text label within the sector'),
+    .describe(
+      'The specific idea space this company pursued — pick the best match from the provided list, or null if none fits',
+    ),
   location: z.enum(REGION).nullable().describe('High-level region the company is based in'),
   country: z.string().nullable().describe('Optional finer country location'),
-  living_status: z.enum(LIVING_STATUS).describe('Current status of the company'),
+  living_status: z.enum(LIVING_STATUS).describe('Current raw status of the company'),
   has_pivoted: z
     .boolean()
     .nullable()
@@ -115,7 +151,7 @@ export const companyExtractionSchema = z.object({
   idea_summary: z
     .string()
     .nullable()
-    .describe('One-sentence summary of the startup idea and technology'),
+    .describe('One-sentence summary of what the company did (the idea/technology)'),
   original_trl: z
     .number()
     .int()
@@ -123,13 +159,21 @@ export const companyExtractionSchema = z.object({
     .max(9)
     .nullable()
     .describe('Technology Readiness Level (1-9) at the time, if evident; else null'),
-  reason_for_demise: z
+  exit_type: z
+    .enum(EXIT_TYPE)
+    .nullable()
+    .describe('Terminal liquidity event, if any (kept separate from funding rounds)'),
+  exit_amount: z.number().nullable().describe('Value of the exit event, if known (not funding)'),
+  exit_date: z.string().nullable().describe('Exit date as an ISO string (YYYY-MM or YYYY-MM-DD)'),
+  exit_notes: z.string().nullable().describe('Acquirer, terms, or context for the exit'),
+  outcome_summary: z
     .string()
     .nullable()
-    .describe('Optional overall prose summary of why it failed'),
-  failure_reasons: z
-    .array(failureReasonSchema)
-    .describe('Structured failure reasons; empty array if the company did not fail'),
+    .describe('What became of the company, if known — distinct from idea_summary'),
+  outcome_source_url: z.string().nullable().describe('Source URL for the outcome narrative'),
+  challenges: z
+    .array(challengeSchema)
+    .describe('Challenges faced, each with an outcome; empty array if none evident'),
 })
 
 export type CompanyExtraction = z.infer<typeof companyExtractionSchema>

@@ -28,30 +28,44 @@ The pipeline is a sequence of stages, maintained as the **TypeScript** version
 under `src/` (see below). The original Python scripts under `scraping/techcrunch/`
 are kept as legacy reference. The output is a small **relational** dataset — one
 CSV per table in `DATA_DIR` (default `./data`), loaded into a single-file SQLite
-database (`lazarus.db`) — as specified in
-[dataset-schema-spec.md](dataset-schema-spec.md).
+database (`lazarus.db`). The schema holds **successes alongside failures** as a
+control group — so a hurdle that killed one company can be told apart from one a
+later company overcame, rather than assumed fatal. (Each challenge is labelled
+`fatal`/`overcome` per company; whether a hurdle is *genuinely* fatal is a
+query-time comparison, and a hurdle with no recorded survivor means "none sampled
+yet," not "unbeatable".) It follows the sector → idea_space → company hierarchy in
+[dataset-schema-spec-v4.md](dataset-schema-spec-v4.md).
 
 The stages are:
 
 - **step0** — scrape a TechCrunch listing page into an article index, then scrape
   each full article. Outputs `techcrunch_article_<ts>_data.csv` (raw input).
 - **step1** — extract structured company info from each article with an LLM
-  (optionally Crunchbase-enriched). Writes `data/companies.csv` +
-  `data/failure_reasons.csv`.
+  (optionally Crunchbase-enriched), mapping each company into the curated
+  `data/idea_spaces.csv`. Writes `data/companies.csv`, `data/company_sectors.csv`
+  (a company can span several sectors), and `data/challenges.csv` (each challenge
+  tagged fatal / overcome / pivoted_from / ongoing).
 - **step1b** — a separate LLM pass decomposing each idea into its dependencies.
   Writes `data/idea_dependencies.csv`.
 - **step2** — find funding-round data per company via web search (DuckDuckGo +
   Wikipedia) + the LLM, one row per round. Writes `data/funding_rounds.csv`.
-- **step3** — deterministic (no LLM) cleanup: standardize dates to `YYYY-MM`
-  (4-digit year, no century guessing), derive `round_year`, de-duplicate rounds
-  per company + round name. Rewrites `data/funding_rounds.csv` in place.
+- **step3** — deterministic cleanup: standardize dates to `YYYY-MM` (4-digit year),
+  derive `round_year`, de-duplicate rounds. Rewrites `data/funding_rounds.csv`.
+- **derive** — deterministic derivation of each company's `outcome_type` +
+  `outcome_rationale` from `living_status`, total raised, exit signals, and company
+  age. Runs after step3 (needs funding); rewrites `data/companies.csv`. Thresholds
+  live in [src/lib/derive-outcome.ts](src/lib/derive-outcome.ts) — tune them there.
 - **build** — load the table CSVs into `lazarus.db` (SQLite via Node's built-in
-  `node:sqlite`), assigning integer PKs and resolving `company_uuid` foreign keys.
+  `node:sqlite`), seeding the `sectors` reference rows, resolving name/uuid foreign
+  keys, and enabling FK enforcement.
 
-Controlled-vocabulary fields (sector, round, failure/dependency category, etc.) are
-enforced by Zod enums in [src/schemas.ts](src/schemas.ts) and mirrored as DB `CHECK`
-constraints. The reassessment axis (step4 / `dependency_assessments`, `current_trl`)
-is specced but not yet implemented.
+`data/idea_spaces.csv` is a **curated seed** you maintain (name, home sector,
+description); step1 only maps companies into spaces you've defined, and the quality
+of the head-to-head comparisons depends on it. Controlled-vocabulary fields are
+enforced by Zod enums in [src/schemas.ts](src/schemas.ts) and mirrored as DB
+`CHECK` constraints. `outcome_type` gray-zone LLM adjudication, the reassessment
+axis (`dependency_assessments`, `current_trl`), and a `sources` table are specced
+but not yet implemented.
 
 ## TypeScript (src/)
 
@@ -80,12 +94,14 @@ Environment variables (see `.env.example`):
 - `INPUT_FILE` — the article CSV from step0 (used by step1 and step1b)
 - `DATA_DIR` — where table CSVs are written (default `./data`)
 - `DB_FILE` — the SQLite output path for `build` (default `lazarus.db`)
+- `BUILD_DATE` — reference date for the `derive` step (default: now)
 - `PROCESSING_LIMIT` (default 10), `BATCH_SIZE` (default 5) — optional tuning
 
 ### Running the pipeline
 
-step1/step1b/step2/step3 read and write the table CSVs in `DATA_DIR`; only step0,
-step1, and step1b need `INPUT_FILE` (the raw article CSV).
+Populate the curated `data/idea_spaces.csv` first (a starter file is included).
+step1/step1b/step2/step3/derive read and write the table CSVs in `DATA_DIR`; only
+step0, step1, and step1b need `INPUT_FILE` (the raw article CSV).
 
 ```
 $ SCRAPE_URL=https://techcrunch.com/tag/climate      npm run step0
@@ -93,11 +109,13 @@ $ INPUT_FILE=techcrunch_article_<ts>_data.csv        npm run step1
 $ INPUT_FILE=techcrunch_article_<ts>_data.csv        npm run step1b
 $ npm run step2
 $ npm run step3
+$ npm run derive     # compute outcome_type from the signals
 $ npm run build      # -> lazarus.db
 ```
 
-Switch providers by setting `PROVIDER=ollama` (runs locally, no rate limits).
-Then query the DB, e.g. `SELECT round_year, SUM(amount) FROM funding_rounds GROUP BY round_year`.
+Switch providers by setting `PROVIDER=ollama` (runs locally, no rate limits). Then
+query the DB, e.g. the core comparison — who overcame a challenge that killed
+others: `SELECT category, SUM(outcome='fatal') killed, SUM(outcome='overcome') overcame FROM challenges GROUP BY category`.
 
 ### Lint / typecheck
 
@@ -111,10 +129,11 @@ $ npm test         # vitest run
 ```
 
 Tests cover the deterministic pieces — funding date standardization + dedup (step3),
+the outcome_type derivation rules (every branch + conservative gray-zone fallbacks),
 the listing-page parser (against the saved `scraping/techcrunch/articles_page.txt`
 fixture), the Zod vocab enums (out-of-vocab values are rejected), and the DB schema
-(CHECK constraints + a company→funding join). The LLM steps are not unit-tested;
-verify those with a live run.
+(the sector→idea_space→company join, CHECK constraints, FK enforcement). The LLM
+steps are not unit-tested; verify those with a live run.
 
 ## Legacy Python
 

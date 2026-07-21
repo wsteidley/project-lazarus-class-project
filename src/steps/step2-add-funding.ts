@@ -35,7 +35,7 @@ const extractFundingForCompany = async (company: CsvRow): Promise<Record<string,
   const prompt = `You are a helpful data aggregator and extractor. Using the company information and the search results below, find the company's funding rounds. round_name must be one of ${ROUND.join(', ')}. Give amount as a number with a separate ISO currency code, and date as YYYY-MM. Leave fields null if unavailable.
 
 Company: ${companyName}
-Sector: ${company.sector ?? ''}
+Idea space: ${company.idea_space_name ?? ''}
 
 ${searchContext}`
 

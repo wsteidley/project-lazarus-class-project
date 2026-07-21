@@ -19,7 +19,7 @@ const buildPrompt = (
 ): string => `You are an analyst decomposing a startup idea into the external things it depended on to succeed. List each dependency using the controlled categories. Mark criticality 'was_blocking' if the dependency plausibly blocked the company's success, otherwise 'contributing'. Leave the list empty if nothing is evident.
 
 Company: ${company.company_name}
-Sector: ${company.sector ?? ''}
+Idea space: ${company.idea_space_name ?? ''}
 Idea summary: ${company.idea_summary ?? ''}
 
 Article content:

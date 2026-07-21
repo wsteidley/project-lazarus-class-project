@@ -12,6 +12,7 @@
     "step1b": "tsx src/steps/step1b-extract-dependencies.ts",
     "step2": "tsx src/steps/step2-add-funding.ts",
     "step3": "tsx src/steps/step3-cleanup-funding.ts",
+    "derive": "tsx src/steps/derive-outcomes.ts",
     "build": "tsx src/steps/build-db.ts",
     "typecheck": "tsc --noEmit",
     "lint": "biome check src",
