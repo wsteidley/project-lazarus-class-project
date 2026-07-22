@@ -36,6 +36,15 @@ export const config = {
   // degrades to DuckDuckGo rather than failing, so a missing secret costs recall,
   // not a broken run.
   tavilyApiKey: process.env.TAVILY_API_KEY ?? '',
+  // #4 confidence machinery knobs (sampling breadth, not correctness): how many
+  // companies to run the fuller cross-source confidence check on, and whether to
+  // restrict that to high-value rows or run it over everyone.
+  confidenceSamples: Number(process.env.CONFIDENCE_SAMPLES ?? '0'), // 0 = no cap
+  confidenceScope: (process.env.CONFIDENCE_SCOPE ?? 'high_value') as 'high_value' | 'all',
+  // Optional Splink fuzzy tier: the score at/above which a merge candidate is auto-applied
+  // by resolve:apply. Candidates below it (down to link.py's 0.5 floor) stay applied=0 in
+  // merge_candidates.csv as a review queue. Retunable without re-running Python.
+  fuzzyMergeThreshold: Number(process.env.FUZZY_MERGE_THRESHOLD ?? '0.9'),
 }
 
 // Scoped data areas: curated input (tracked), raw scrapes, and timestamped run

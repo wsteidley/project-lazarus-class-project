@@ -99,6 +99,9 @@ const extractCompany = (
       country: extracted.country,
       year_founded: extracted.year_founded,
       year_defunct: extracted.year_defunct,
+      // Provenance for these two fields; filled in by enrich/outcome-pass steps.
+      living_status_source: '',
+      year_founded_source: '',
       living_status: extracted.living_status,
       has_pivoted: bit(extracted.has_pivoted),
       idea_summary: extracted.idea_summary,
@@ -108,6 +111,12 @@ const extractCompany = (
       exit_notes: extracted.exit_notes,
       outcome_summary: extracted.outcome_summary,
       outcome_source_url: extracted.outcome_source_url,
+      // Set by the outcome pass (Phase 2b); left empty here.
+      outcome_confidence: '',
+      outcome_confidence_score: '',
+      outcome_confidence_self_reported: '',
+      outcome_contested: '',
+      outcome_contested_note: '',
       // Derived in the derivation step; left empty here.
       outcome_type: '',
       outcome_rationale: '',

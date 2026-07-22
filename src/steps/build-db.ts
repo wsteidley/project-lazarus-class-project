@@ -88,11 +88,14 @@ const main = async (): Promise<void> => {
   const insertCompany = db.prepare(
     `INSERT INTO companies
       (uuid, company_name, idea_space_id, founders, canonical_uuid, merged_from,
-       location, country, year_founded, year_defunct, living_status, has_pivoted,
+       location, country, year_founded, year_defunct, living_status_source,
+       year_founded_source, living_status, has_pivoted,
        idea_summary, exit_type, exit_amount, exit_date, exit_notes, outcome_summary,
-       outcome_source_url, outcome_type, outcome_rationale, original_trl, is_climate,
+       outcome_source_url, outcome_confidence, outcome_confidence_score,
+       outcome_confidence_self_reported, outcome_contested,
+       outcome_contested_note, outcome_type, outcome_rationale, original_trl, is_climate,
        source_url, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   )
   const idByUuid = new Map<string, number>()
   for (const row of companies) {
@@ -107,6 +110,8 @@ const main = async (): Promise<void> => {
       toText(row.country),
       toInt(row.year_founded),
       toInt(row.year_defunct),
+      toText(row.living_status_source),
+      toText(row.year_founded_source),
       toText(row.living_status),
       toInt(row.has_pivoted),
       toText(row.idea_summary),
@@ -116,6 +121,11 @@ const main = async (): Promise<void> => {
       toText(row.exit_notes),
       toText(row.outcome_summary),
       toText(row.outcome_source_url),
+      toText(row.outcome_confidence),
+      toReal(row.outcome_confidence_score),
+      toText(row.outcome_confidence_self_reported),
+      toInt(row.outcome_contested),
+      toText(row.outcome_contested_note),
       toText(row.outcome_type),
       toText(row.outcome_rationale),
       toInt(row.original_trl),

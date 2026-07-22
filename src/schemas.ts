@@ -292,3 +292,31 @@ export const dependencyAssessmentSchema = z.object({
 
 export type DependencyResolution = z.infer<typeof dependencyResolutionSchema>
 export type DependencyAssessment = z.infer<typeof dependencyAssessmentSchema>
+
+// Phase 2b: the retrospective outcome pass. Same evidence shape as
+// dependencyAssessmentSchema (confidence/contested/snippet), but for what became of a
+// company — living_status and, if it exited, the terminal event.
+export const outcomeAssessmentSchema = z.object({
+  living_status: z.enum(LIVING_STATUS).describe('Current status, per the search evidence'),
+  exit_type: z
+    .enum(EXIT_TYPE)
+    .nullable()
+    .describe('Terminal liquidity event, if any; null if none evident'),
+  exit_amount: z.number().nullable().describe('Value of the exit event, if known'),
+  exit_date: z.string().nullable().describe('Exit date as YYYY-MM or YYYY-MM-DD, if known'),
+  exit_notes: z.string().nullable().describe('Acquirer, terms, or context for the exit'),
+  outcome_summary: z
+    .string()
+    .nullable()
+    .describe('What became of the company, per the search evidence'),
+  source_url: z.string().nullable().describe('URL the outcome verdict came from'),
+  snippet: z
+    .string()
+    .nullable()
+    .describe('Short verbatim quote from the source supporting the verdict'),
+  confidence: z.enum(CONFIDENCE).describe('Evidence strength behind this verdict'),
+  contested: z.boolean().describe('True if sources disagree about the outcome'),
+  contested_note: z.string().nullable().describe('What the disagreement is; else null'),
+})
+
+export type OutcomeAssessment = z.infer<typeof outcomeAssessmentSchema>

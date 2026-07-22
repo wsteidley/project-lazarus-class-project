@@ -3,9 +3,21 @@ import {
   dedupeFundingRows,
   type FundingCsvRow,
   fixRoundName,
+  isEnrichmentFundingRow,
   standardizeDate,
   yearFromStandardizedDate,
 } from './funding.js'
+
+describe('isEnrichmentFundingRow', () => {
+  it('is true for an enrichment-provenance source_url', () => {
+    expect(isEnrichmentFundingRow({ source_url: 'enrichment:crunchbase:website' })).toBe(true)
+  })
+
+  it('is false for a real article/source URL or a missing one', () => {
+    expect(isEnrichmentFundingRow({ source_url: 'https://techcrunch.com/x' })).toBe(false)
+    expect(isEnrichmentFundingRow({})).toBe(false)
+  })
+})
 
 describe('standardizeDate', () => {
   const cases: [string, string | null][] = [

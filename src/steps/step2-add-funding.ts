@@ -1,6 +1,9 @@
+import { existsSync } from 'node:fs'
+import { join } from 'node:path'
 import { config } from '../config.js'
 import { processInBatches } from '../lib/batch.js'
 import { type CsvRow, readTableCsv, writeTableCsv } from '../lib/csv.js'
+import { isEnrichmentFundingRow } from '../lib/funding.js'
 import { latestRunDir } from '../lib/paths.js'
 import { utcTimestamp } from '../lib/timestamp.js'
 import { buildChatModel } from '../llm.js'
@@ -59,11 +62,28 @@ const main = async (): Promise<void> => {
   )
   const flattened = fundingRows.flat()
 
-  if (flattened.length === 0) {
-    throw new Error('No funding data was successfully processed')
+  // This step overwrites funding_rounds.csv, but Phase 2a (enrich) may have written
+  // aggregate funding rows there first. Carry those across — except for companies
+  // this step found real per-round data for, whose granular rounds supersede the
+  // lump-sum aggregate (keeping both would double-count in summarizeFunding).
+  const existingFunding = existsSync(join(runDir, 'funding_rounds.csv'))
+    ? await readTableCsv(runDir, 'funding_rounds.csv')
+    : []
+  const companiesWithSearchedFunding = new Set(flattened.map((row) => row.company_uuid))
+  const enrichmentFunding = existingFunding
+    .filter(isEnrichmentFundingRow)
+    .filter((row) => !companiesWithSearchedFunding.has(row.company_uuid))
+
+  const combined = [...enrichmentFunding, ...flattened]
+  if (combined.length === 0) {
+    throw new Error('No funding data (enrichment or search) was produced')
   }
 
-  await writeTableCsv(flattened, runDir, 'funding_rounds.csv')
+  await writeTableCsv(combined, runDir, 'funding_rounds.csv')
+  console.log(
+    `Wrote ${combined.length} funding rows (${flattened.length} searched, ` +
+      `${enrichmentFunding.length} carried from enrichment)`,
+  )
   console.log('\nDONE\n')
 }
 

@@ -68,6 +68,32 @@ describe('createTablesSql', () => {
     db.close()
   })
 
+  it('stores enrichment provenance alongside the fields it explains', () => {
+    const db = freshDb()
+    const companyId = Number(
+      db
+        .prepare(
+          `INSERT INTO companies (company_name, living_status, living_status_source, year_founded, year_founded_source)
+           VALUES (?, ?, ?, ?, ?)`,
+        )
+        .run(
+          'Acme Storage',
+          'Defunct',
+          'enrichment:crunchbase:website',
+          2015,
+          'enrichment:startup-failures:name',
+        ).lastInsertRowid,
+    )
+    const row = db
+      .prepare('SELECT living_status_source, year_founded_source FROM companies WHERE id = ?')
+      .get(companyId)
+    expect(row).toEqual({
+      living_status_source: 'enrichment:crunchbase:website',
+      year_founded_source: 'enrichment:startup-failures:name',
+    })
+    db.close()
+  })
+
   it('enforces the foreign key from company_sectors to companies', () => {
     const db = freshDb()
     expect(() =>

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { CsvRow } from './csv.js'
 import {
+  applyMergeCandidates,
   canonicalKey,
   mergeCompanyUrls,
   nearMissReport,
@@ -227,6 +228,78 @@ describe('remapCompanyUuids', () => {
 
   it('leaves unknown uuids alone so build-db reports them rather than hiding them', () => {
     expect(remapCompanyUuids([{ company_uuid: 'ghost' }], new Map())[0]?.company_uuid).toBe('ghost')
+  })
+})
+
+describe('mergeGroup (via resolveCompanies) provenance', () => {
+  it('accumulates merged_from across passes instead of overwriting it', () => {
+    // A canonical row that already absorbed 'old' in an earlier pass, now merged again
+    // with another row on a shared website key. The earlier provenance must survive.
+    const { companies } = resolveCompanies(
+      [
+        company({ uuid: 'u1', merged_from: 'old', created_at: '2026-01-01T00:00:00Z' }),
+        company({ uuid: 'u2', merged_from: '', created_at: '2026-01-02T00:00:00Z' }),
+      ],
+      [url('u1', 'website', 'helios.com'), url('u2', 'website', 'helios.com')],
+    )
+    expect(companies).toHaveLength(1)
+    const from = (companies[0]?.merged_from ?? '').split(';').sort()
+    expect(from).toEqual(['old', 'u2'])
+  })
+})
+
+describe('applyMergeCandidates', () => {
+  const base = (uuid: string, createdAt: string): CsvRow =>
+    company({ uuid, company_name: `Co ${uuid}`, created_at: createdAt })
+
+  it('merges a scored pair through mergeGroup, keeping the earliest row canonical', () => {
+    const companies = [
+      base('u1', '2026-01-01T00:00:00Z'),
+      base('u2', '2026-01-02T00:00:00Z'),
+      base('u3', '2026-01-03T00:00:00Z'),
+    ]
+    const result = applyMergeCandidates(companies, [], [{ a: 'u2', b: 'u1' }])
+    expect(result.companies).toHaveLength(2)
+    expect(result.mergeCount).toBe(1)
+    const merged = result.companies.find((c) => c.uuid === 'u1')
+    expect(merged?.merged_from).toBe('u2')
+    expect(result.uuidMap.get('u2')).toBe('u1')
+    expect(result.uuidMap.get('u3')).toBe('u3')
+  })
+
+  it('clusters transitive pairs (a~b, b~c) into one company', () => {
+    const companies = [
+      base('u1', '2026-01-01T00:00:00Z'),
+      base('u2', '2026-01-02T00:00:00Z'),
+      base('u3', '2026-01-03T00:00:00Z'),
+    ]
+    const result = applyMergeCandidates(
+      companies,
+      [],
+      [
+        { a: 'u1', b: 'u2' },
+        { a: 'u2', b: 'u3' },
+      ],
+    )
+    expect(result.companies).toHaveLength(1)
+    expect((result.companies[0]?.merged_from ?? '').split(';').sort()).toEqual(['u2', 'u3'])
+  })
+
+  it('ignores pairs referencing a uuid that is not a current company (safe re-run)', () => {
+    const companies = [base('u1', '2026-01-01T00:00:00Z')]
+    const result = applyMergeCandidates(companies, [], [{ a: 'u1', b: 'gone' }])
+    expect(result.companies).toHaveLength(1)
+    expect(result.mergeCount).toBe(0)
+  })
+
+  it('re-points merged companies’ urls onto the survivor', () => {
+    const companies = [base('u1', '2026-01-01T00:00:00Z'), base('u2', '2026-01-02T00:00:00Z')]
+    const result = applyMergeCandidates(
+      companies,
+      [url('u2', 'linkedin', 'https://linkedin.com/company/x')],
+      [{ a: 'u1', b: 'u2' }],
+    )
+    expect(result.urls[0]?.company_uuid).toBe('u1')
   })
 })
 

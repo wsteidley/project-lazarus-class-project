@@ -1,0 +1,27 @@
+[project]
+name = "lazarus-resolve"
+version = "0.1.0"
+description = "Splink fuzzy company matching for Project Lazarus (proposes merge_candidates; TypeScript applies them)"
+requires-python = ">=3.10"
+dependencies = [
+  "splink>=4,<5",
+  "rapidfuzz>=3",
+  "pandas>=2",
+]
+
+# link.py is a script, not an installed package — don't try to build/install this project,
+# just provision its dependencies (uv run --project resolve ...).
+[tool.uv]
+package = false
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.15.22",
+]

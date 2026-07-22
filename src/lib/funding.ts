@@ -22,6 +22,13 @@ export type StandardizedFundingRow = {
   source_url: string
 }
 
+// A funding row that came from Phase 2a enrichment (an aggregate total from a static
+// source) rather than the step2 LLM search. Tagged by its source_url provenance
+// (`enrichment:<source>:<tier>`), so step2 can carry it across its overwrite and
+// enrich can drop its own prior rows before re-appending (idempotent re-runs).
+export const isEnrichmentFundingRow = (row: { source_url?: string }): boolean =>
+  (row.source_url ?? '').startsWith('enrichment:')
+
 // Maps a loosely-worded round name onto the controlled ROUND vocabulary, or "Unknown".
 export const fixRoundName = (currentName: string | null | undefined): string => {
   for (const name of ROUND) {

@@ -179,6 +179,61 @@ Wayback capture, or a dead-site link is a new row rather than a migration — an
   every group merges automatically, with `merged_from` making it auditable after
   the fact.
 
+### Decisions before building the Splink step (`fuzzy-matching-step-spec-v1.md`)
+
+The v1 fuzzy spec is written as if a shared `data/lazarus.sqlite` already exists and as
+if CI/pre-commit are already wired for Biome. Exploration of the current repo says
+otherwise, so three forks need a call before the step can be built. Each is annotated
+with the finding and a recommendation — **mark your choice / leave feedback inline.**
+
+- **A. Where the Splink handoff SQLite lives.** The spec's script reads
+  `--db data/lazarus.sqlite`, but at the resolve boundary the pipeline is **CSV-only**:
+  `companies.csv` / `company_urls.csv` sit in the per-run `data/output/<stamp>/` dir,
+  and the real SQLite DB is built only at the final `build` step (`<runDir>/lazarus.db`).
+  So the fuzzy step must first *materialize* a scratch DB (just `companies` +
+  `company_urls`) from the latest run dir for Splink to read/write.
+  - **A1 (recommended):** run-dir scratch `<runDir>/resolve.sqlite` — per-run, already
+    gitignored (`data/output/`), consistent with how `lazarus.db` already lives in the
+    run dir. Path resolved at runtime, not hardcoded.
+  - **A2 (spec-literal):** fixed `data/lazarus.sqlite` — matches the spec's script
+    verbatim; needs a new `.gitignore` entry (there is no `*.sqlite` glob today) and is
+    rebuilt from the latest run dir each fuzzy run.
+  - _Decision:_ ___
+
+- **B. Shape of `resolve:fuzzy` + graceful degradation.** The spec lists
+  `resolve:fuzzy = uv run … link.py`, but nothing exports CSV→SQLite and nothing handles
+  `uv` being absent (the spec wants a silent skip, same posture as a missing
+  `TAVILY_API_KEY`). `uv` is not installed.
+  - **B1 (recommended):** one `tsx` wrapper for `resolve:fuzzy` that exports CSV→SQLite,
+    probes `which uv`, spawns `uv run --project resolve resolve/link.py --db <path>`,
+    and **warns + exits 0** if `uv` is missing. Keeps "SQLite is the only thing crossing
+    the language boundary" and folds the degrade-gracefully behaviour into one entry point.
+  - **B2 (spec-literal):** keep `resolve:fuzzy` as the raw `uv run`, add a separate
+    `resolve:export` TS step, and rely on manual gating (missing `uv` is a hard error).
+  - _Decision:_ ___
+
+- **C. Python lint / CI scope.** There is **no CI, no pre-commit, and no Python linter**
+  anywhere today — Biome runs only via `npm run lint`. So "mirror ruff into CI/pre-commit
+  alongside Biome" has nothing to mirror into.
+  - **C1 (recommended):** add `ruff` config under `resolve/` and a `lint:py` npm script
+    mirroring `lint: biome check src`; **no** CI/pre-commit (matches current reality).
+  - **C2 (broader):** additionally scaffold GitHub Actions + pre-commit running Biome,
+    ruff, `tsc`, and vitest repo-wide — more infrastructure than the fuzzy step itself.
+  - _Decision:_ ___
+
+**Two implementation notes surfaced during exploration (not forks, but flagged):**
+- **There is no force-merge API.** `resolveCompanies` groups purely by `canonicalKey`;
+  two companies Splink calls duplicates have *different* keys by construction (that's why
+  ID-first left them apart). The apply step (`resolve:apply`) therefore clusters the
+  scored uuid pairs (union-find) and re-merges each cluster through the **existing**
+  `mergeGroup` + `mergeCompanyUrls` + `remapCompanyUuids`, so every merge invariant stays
+  in one implementation — it does not invent a parallel merge path.
+- **`merged_from` must accumulate.** `mergeGroup` currently *overwrites*
+  `merged_from` with only the uuids absorbed in that call. Applying fuzzy merges to rows
+  that are *already* canonical (post-resolve) would drop the earlier provenance, so
+  `mergeGroup` needs to union prior `merged_from` with the newly absorbed uuids (small,
+  test-covered change that also hardens the existing resolve step).
+
 ## 6. Incremental scraping supplement flag (specced, not built)
 
 **Status: not built.** Sourcing v1 specifies a step0 flag that copies the previous

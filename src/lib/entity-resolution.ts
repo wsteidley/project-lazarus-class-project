@@ -134,10 +134,13 @@ const mergeGroup = (group: CsvRow[]): CsvRow => {
   }
 
   merged.canonical_uuid = base.uuid ?? ''
-  merged.merged_from = rest
-    .map((row) => row.uuid ?? '')
-    .filter(Boolean)
-    .join(';')
+  // Accumulate provenance rather than overwrite it: union any merged_from already on the
+  // grouped rows (from an earlier resolve pass) with the uuids absorbed here, de-duped.
+  // Without this, a second merge pass (e.g. fuzzy apply over already-canonical rows)
+  // would silently drop the first pass's absorbed uuids.
+  const priorMergedFrom = ordered.flatMap((row) => (row.merged_from ?? '').split(';'))
+  const absorbed = rest.map((row) => row.uuid ?? '')
+  merged.merged_from = [...new Set([...priorMergedFrom, ...absorbed])].filter(Boolean).join(';')
   return merged
 }
 
@@ -202,6 +205,87 @@ export const resolveCompanies = (rows: CsvRow[], urls: CsvRow[] = []): Resolutio
   }
 
   return { companies, urls: mergeCompanyUrls(urls, uuidMap), uuidMap, mergesByTier }
+}
+
+export type ApplyMergeResult = {
+  companies: CsvRow[]
+  urls: CsvRow[]
+  /** Every original uuid mapped to the uuid that survived, including untouched rows. */
+  uuidMap: Map<string, string>
+  /** How many clusters actually merged (i.e. absorbed at least one other company). */
+  mergeCount: number
+}
+
+// Applies fuzzy merge candidates: clusters the scored uuid pairs (union-find) and merges
+// each cluster through the *same* mergeGroup path resolve uses, so merged_from auditing,
+// canonical-uuid selection, and every merge invariant stay in one implementation. There is
+// deliberately no force-merge API — two fuzzy duplicates have different canonicalKeys by
+// construction, so this is the only sanctioned way to merge them.
+//
+// Pairs referencing a uuid that is not a current canonical company (already absorbed, or
+// unknown) are ignored, so applying the same candidates twice is a safe no-op.
+export const applyMergeCandidates = (
+  companies: CsvRow[],
+  urls: CsvRow[],
+  pairs: { a: string; b: string }[],
+): ApplyMergeResult => {
+  const present = new Set(companies.map((company) => company.uuid ?? '').filter(Boolean))
+
+  // Union-find over the uuids that are present as canonical companies.
+  const parent = new Map<string, string>()
+  const find = (x: string): string => {
+    let root = x
+    while (parent.has(root) && parent.get(root) !== root) {
+      root = parent.get(root) as string
+    }
+    let cur = x
+    while (parent.has(cur) && parent.get(cur) !== cur) {
+      const next = parent.get(cur) as string
+      parent.set(cur, root)
+      cur = next
+    }
+    return root
+  }
+  const union = (a: string, b: string): void => {
+    if (!parent.has(a)) parent.set(a, a)
+    if (!parent.has(b)) parent.set(b, b)
+    const ra = find(a)
+    const rb = find(b)
+    if (ra !== rb) {
+      parent.set(ra, rb)
+    }
+  }
+  for (const { a, b } of pairs) {
+    if (present.has(a) && present.has(b)) {
+      union(a, b)
+    }
+  }
+
+  // Group companies by union-find root; a company in no pair is its own singleton cluster.
+  const clusters = new Map<string, CsvRow[]>()
+  companies.forEach((company, index) => {
+    const uuid = company.uuid ?? ''
+    const root = uuid ? find(uuid) : `__norow_${index}`
+    clusters.set(root, [...(clusters.get(root) ?? []), company])
+  })
+
+  const merged: CsvRow[] = []
+  const uuidMap = new Map<string, string>()
+  let mergeCount = 0
+  for (const group of clusters.values()) {
+    const mergedRow = mergeGroup(group)
+    merged.push(mergedRow)
+    for (const row of group) {
+      if (row.uuid) {
+        uuidMap.set(row.uuid, mergedRow.uuid ?? '')
+      }
+    }
+    if (group.length > 1) {
+      mergeCount += 1
+    }
+  }
+
+  return { companies: merged, urls: mergeCompanyUrls(urls, uuidMap), uuidMap, mergeCount }
 }
 
 // Rewrites a child table's company_uuid onto the surviving canonical uuid. Rows whose

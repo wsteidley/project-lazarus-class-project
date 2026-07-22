@@ -56,6 +56,12 @@ CREATE TABLE companies (
   country            TEXT,
   year_founded       INTEGER,
   year_defunct       INTEGER,
+  -- Provenance for the fields Phase 2a/2b both write, so precedence can tell a
+  -- strong-join enrichment value apart from a name-only seed or a fresh search
+  -- finding, e.g. "enrichment:crunchbase:website", "enrichment:startup-failures:name",
+  -- "search", "heuristic". Blank means neither enrichment nor search ever set it.
+  living_status_source TEXT,
+  year_founded_source   TEXT,
   living_status      TEXT ${checkIn('living_status', LIVING_STATUS)},
   has_pivoted        INTEGER,
   idea_summary       TEXT,
@@ -65,6 +71,14 @@ CREATE TABLE companies (
   exit_notes         TEXT,
   outcome_summary    TEXT,
   outcome_source_url TEXT,
+  -- Evidence strength for the outcome pass's living_status/exit verdict. The score is
+  -- authoritative; outcome_confidence is the four-level label *derived from it*. The
+  -- LLM's own self-reported label is kept separate and never blended into the label.
+  outcome_confidence               TEXT ${checkIn('outcome_confidence', CONFIDENCE)},
+  outcome_confidence_score         REAL,
+  outcome_confidence_self_reported TEXT ${checkIn('outcome_confidence_self_reported', CONFIDENCE)},
+  outcome_contested                INTEGER,
+  outcome_contested_note           TEXT,
   outcome_type       TEXT ${checkIn('outcome_type', OUTCOME_TYPE)},
   outcome_rationale  TEXT,
   original_trl       INTEGER,
