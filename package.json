@@ -18,6 +18,7 @@
     "reassess": "tsx src/steps/reassess.ts",
     "build": "tsx src/steps/build-db.ts",
     "clean": "tsx src/steps/clean.ts",
+    "build-sources": "tsx src/sources/build-sources.ts",
     "typecheck": "tsc --noEmit",
     "lint": "biome check src",
     "format": "biome format --write src",

@@ -70,8 +70,9 @@ export const urlsByCompany = (urls: CsvRow[]): Map<string, CsvRow[]> => {
 }
 
 // Collapses a company name for comparison: case, punctuation, and the corporate
-// suffixes that vary between write-ups of the same company.
-const normalizeName = (name: string | null | undefined): string =>
+// suffixes that vary between write-ups of the same company. Exported so external
+// sources compute the same name-join key that resolution uses.
+export const normalizeName = (name: string | null | undefined): string =>
   (name ?? '')
     .toLowerCase()
     .replace(/[^a-z0-9\s]/g, ' ')

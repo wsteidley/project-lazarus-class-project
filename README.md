@@ -104,9 +104,17 @@ data/
   input/dependencies.csv       #   canonical dependencies + their viability thresholds
   scraped/                     # step0 output, timestamped article CSVs
   cache/<url_hash>.json        # content-addressed fetch cache, survives runs
+  sources/<name>/              # static enrichment data (Crunchbase, failure sets):
+                               #   raw/ copies + a normalized companies.csv
   output/<run>/                # one timestamped folder per pipeline run:
                                #   the table CSVs + lazarus.db
 ```
+
+`data/sources/` holds external reference data used to enrich companies the pipeline
+finds — status, funding, founding/defunct years, known failure reasons. Regenerate with
+`npm run build-sources` (copies originals from `data/kaggle/`, writes a normalized
+`companies.csv` per source). The normalized files and loader exist; the enrichment step
+that consults them is a later round. See [data/sources/README.md](data/sources/README.md).
 
 Steps **auto-resolve the latest input** — you never pass a run id. step1 reads the
 newest scrape and opens a fresh `output/<run>/`; the later steps all flow into the

@@ -7,11 +7,22 @@ import { stringify } from 'csv-stringify/sync'
 // round-trips these files. Callers parse/serialize richer fields themselves.
 export type CsvRow = Record<string, string>
 
-export const readCsv = async (filename: string): Promise<CsvRow[]> => {
+// Extra csv-parse options, for the occasional messy external file. `relaxColumnCount`
+// tolerates ragged rows (hand-compiled source CSVs vary per row); `relaxQuotes`
+// tolerates stray quotes mid-field. Both throw by default, which is what we want for
+// the pipeline's own CSVs.
+export type ReadCsvOptions = { relaxColumnCount?: boolean; relaxQuotes?: boolean }
+
+export const readCsv = async (
+  filename: string,
+  options: ReadCsvOptions = {},
+): Promise<CsvRow[]> => {
   const fileContents = await readFile(filename, 'utf-8')
   return parse(fileContents, {
     columns: true,
     skip_empty_lines: true,
+    relax_column_count: options.relaxColumnCount ?? false,
+    relax_quotes: options.relaxQuotes ?? false,
   }) as CsvRow[]
 }
 

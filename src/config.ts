@@ -46,6 +46,10 @@ export const outputBaseDir = join(config.dataDir, 'output')
 // Content-addressed raw-document cache. Deliberately outside the run folders so it
 // survives runs: re-extraction under an evolving schema must never re-scrape.
 export const cacheDir = join(config.dataDir, 'cache')
+// Static external reference data (Crunchbase, startup-failure compilations, …), used
+// to enrich companies the pipeline finds. Each `sources/<name>/` holds the untouched
+// raw copy plus a normalized `companies.csv` in the shared enrichment schema.
+export const sourcesDir = join(config.dataDir, 'sources')
 
 // Provider-specific secrets are read lazily so a step only needs the vars it uses.
 export const requireOpenAiKey = (): string => requireEnv('OPENAI_API_KEY')
