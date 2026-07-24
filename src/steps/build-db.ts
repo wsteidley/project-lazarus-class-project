@@ -1,10 +1,18 @@
 import { existsSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
+import { classifyBaseline } from '../lib/baseline.js'
 import { type CsvRow, readCsv } from '../lib/csv.js'
 import { createTablesSql } from '../lib/db-schema.js'
 import { inputFile, latestRunDir } from '../lib/paths.js'
+import { computeProjections, type ProgressPoint } from '../lib/projection.js'
 import { readAllCachedDocuments } from '../lib/raw-documents.js'
+import {
+  validateDependencyLinks,
+  validateObservationRows,
+  validateThresholds,
+} from '../lib/thresholds.js'
+import { trajectoryConfig } from '../lib/trajectory-config.js'
 import { SECTOR } from '../schemas.js'
 
 const toText = (value: string | undefined): string | null =>
@@ -51,6 +59,13 @@ const main = async (): Promise<void> => {
   const dependencies = await readCsvIfExists(inputFile('dependencies.csv'))
   const companyDependencies = await readCsvIfExists(join(runDir, 'company_dependencies.csv'))
   const assessments = await readCsvIfExists(join(runDir, 'dependency_assessments.csv'))
+  // Curated, dated, cited metric facts — a curated input like dependencies.csv, not a run
+  // output. Kept separate from the LLM-generated assessments above.
+  const metricObservations = await readCsvIfExists(inputFile('metric_observations.csv'))
+  // v2 threshold layer: bars keyed (dependency, metric, scope), and causal links between
+  // dependencies. Curated inputs.
+  const thresholds = await readCsvIfExists(inputFile('dependency_thresholds.csv'))
+  const dependencyLinks = await readCsvIfExists(inputFile('dependency_links.csv'))
   const rawDocuments = await readAllCachedDocuments()
 
   if (existsSync(dbFile)) {
@@ -223,11 +238,11 @@ const main = async (): Promise<void> => {
     )
   }
 
-  // dependencies: curated canonical dimension. name -> id, for the two tables below.
+  // dependencies: curated canonical dimension (identity + kind only; bars live in
+  // dependency_thresholds). name -> id, for the tables below.
   const insertDependency = db.prepare(
-    `INSERT INTO dependencies
-      (uuid, name, category, description, threshold_metric, threshold_value, threshold_unit)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO dependencies (uuid, name, category, description, threshold_kind)
+     VALUES (?, ?, ?, ?, ?)`,
   )
   const dependencyIdByName = new Map<string, number>()
   for (const row of dependencies) {
@@ -236,13 +251,64 @@ const main = async (): Promise<void> => {
       toText(row.name) ?? '',
       toText(row.category),
       toText(row.description),
-      toText(row.threshold_metric),
-      toReal(row.threshold_value),
-      toText(row.threshold_unit),
+      toText(row.threshold_kind),
     )
     if (row.name) {
       dependencyIdByName.set(row.name, Number(info.lastInsertRowid))
     }
+  }
+
+  // dependency_thresholds: one bar per (dependency, metric, scope). Validate names against
+  // the seed (report, don't drop) and enforce that a quantitative_with_threshold dependency
+  // actually carries a complete bar.
+  const canonicalNames = [...dependencyIdByName.keys()]
+  const {
+    resolved: resolvedThresholds,
+    unmatched: unmatchedThresholds,
+    incomplete: incompleteThresholds,
+  } = validateThresholds(dependencies, thresholds, canonicalNames)
+  for (const row of unmatchedThresholds) {
+    console.warn(
+      `  dependency_threshold dependency_name matched nothing canonical: "${row.dependency_name ?? ''}"`,
+    )
+  }
+  for (const { name, missing } of incompleteThresholds) {
+    console.warn(`  threshold incomplete for "${name}": missing ${missing.join(', ')}`)
+  }
+  const insertThreshold = db.prepare(
+    `INSERT OR IGNORE INTO dependency_thresholds
+      (dependency_id, metric, scope, threshold_value, threshold_unit, threshold_direction,
+       threshold_source_url, threshold_as_of, threshold_note, threshold_contested,
+       threshold_alt_value, threshold_alt_source_url, threshold_contested_note,
+       baseline_value, baseline_as_of, baseline_note)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  )
+  let thresholdsInserted = 0
+  for (const row of resolvedThresholds) {
+    const dependencyId = dependencyIdByName.get(row.dependency_name)
+    if (dependencyId === undefined) {
+      skipped += 1
+      continue
+    }
+    insertThreshold.run(
+      dependencyId,
+      toText(row.metric),
+      toText(row.scope),
+      toReal(row.threshold_value),
+      toText(row.threshold_unit),
+      toText(row.threshold_direction),
+      toText(row.threshold_source_url),
+      toText(row.threshold_as_of),
+      toText(row.threshold_note),
+      toInt(row.threshold_contested) ?? 0,
+      toReal(row.threshold_alt_value),
+      toText(row.threshold_alt_source_url),
+      toText(row.threshold_contested_note),
+      toReal(row.baseline_value),
+      toText(row.baseline_as_of),
+      toText(row.baseline_note),
+    )
+    thresholdsInserted += 1
   }
 
   // company_dependencies: resolve company_uuid + dependency_name. Rows step1c left
@@ -298,6 +364,145 @@ const main = async (): Promise<void> => {
     )
   }
 
+  // metric_observations: curated dated facts. Resolve dependency_name -> id via the same
+  // map, and reuse matchCanonical (via validateObservationRows) so an unresolvable name or a
+  // curated row without a source is reported, not silently dropped. Append-only table.
+  const {
+    resolved: resolvedObservations,
+    unmatched: unmatchedObservations,
+    missingSource,
+  } = validateObservationRows(metricObservations, [...dependencyIdByName.keys()])
+  for (const row of unmatchedObservations) {
+    console.warn(
+      `  metric_observation dependency_name matched nothing canonical: "${row.dependency_name ?? ''}"`,
+    )
+  }
+  for (const row of missingSource) {
+    console.warn(
+      `  curated metric_observation missing source_url: "${row.dependency_name ?? ''}" ${row.metric ?? ''} ${row.as_of ?? ''}`,
+    )
+  }
+  const insertObservation = db.prepare(
+    `INSERT INTO metric_observations
+      (dependency_id, metric, value, unit, as_of, scope, method, source_url, source_name, note)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  )
+  let observationsInserted = 0
+  for (const row of resolvedObservations) {
+    const dependencyId = dependencyIdByName.get(row.dependency_name)
+    if (dependencyId === undefined) {
+      skipped += 1
+      continue
+    }
+    insertObservation.run(
+      dependencyId,
+      toText(row.metric),
+      toReal(row.value),
+      toText(row.unit),
+      toText(row.as_of),
+      toText(row.scope),
+      toText(row.method),
+      toText(row.source_url),
+      toText(row.source_name),
+      toText(row.note),
+    )
+    observationsInserted += 1
+  }
+
+  // dependency_links: causal edges between dependencies. Both endpoints must resolve.
+  const { resolved: resolvedLinks, unmatched: unmatchedLinks } = validateDependencyLinks(
+    dependencyLinks,
+    canonicalNames,
+  )
+  for (const row of unmatchedLinks) {
+    console.warn(
+      `  dependency_link endpoint matched nothing canonical: "${row.from_dependency ?? ''}" -> "${row.to_dependency ?? ''}"`,
+    )
+  }
+  const insertLink = db.prepare(
+    `INSERT INTO dependency_links (from_dependency_id, to_dependency_id, relation, note)
+     VALUES (?, ?, ?, ?)`,
+  )
+  let linksInserted = 0
+  for (const link of resolvedLinks) {
+    const fromId = dependencyIdByName.get(link.from_dependency)
+    const toId = dependencyIdByName.get(link.to_dependency)
+    if (fromId === undefined || toId === undefined) {
+      skipped += 1
+      continue
+    }
+    insertLink.run(fromId, toId, link.relation, toText(link.note))
+    linksInserted += 1
+  }
+
+  // trajectory_config: seed the one tunable row the trajectory view cross-joins against.
+  db.prepare('INSERT INTO trajectory_config (window_n, plateau_slope_threshold) VALUES (?, ?)').run(
+    trajectoryConfig.windowN,
+    trajectoryConfig.plateauSlopeThreshold,
+  )
+
+  // Baseline guards (report-not-drop): a bar whose baseline (declared, or earliest observation)
+  // can't express a 0->1 range yields null progress, so surface why. Crossing is unaffected —
+  // the trajectory view tests the value against the bar directly.
+  const baselineRows = db
+    .prepare(
+      `SELECT t.dependency_id, t.metric, t.scope, t.threshold_direction AS direction,
+              t.threshold_value AS threshold,
+              COALESCE(t.baseline_value, (
+                SELECT o.value FROM metric_observations o
+                WHERE o.dependency_id = t.dependency_id AND o.metric = t.metric AND o.scope = t.scope
+                ORDER BY o.as_of LIMIT 1)) AS baseline
+       FROM dependency_thresholds t
+       WHERE t.threshold_value IS NOT NULL`,
+    )
+    .all() as { direction: string; threshold: number; baseline: number | null; metric: string }[]
+  let baselineEquals = 0
+  let baselinePast = 0
+  for (const row of baselineRows) {
+    if (row.baseline === null) {
+      continue
+    }
+    const status = classifyBaseline({
+      direction: row.direction,
+      threshold: row.threshold,
+      baseline: row.baseline,
+    })
+    if (status === 'baseline_equals_threshold') {
+      baselineEquals += 1
+      console.warn(`  baseline == threshold (progress null) for "${row.metric}"`)
+    } else if (status === 'baseline_past_threshold') {
+      baselinePast += 1
+      console.warn(`  baseline already past threshold (progress null) for "${row.metric}"`)
+    }
+  }
+
+  // metric_projections: the one derived layer that is real computation, not a view. Read the
+  // progress view back, fit each not-yet-crossed series, and store the projected points.
+  const progressRows = db
+    .prepare('SELECT dependency_id, metric, scope, as_of, progress FROM progress')
+    .all() as ProgressPoint[]
+  const projections = computeProjections(progressRows, { windowN: trajectoryConfig.windowN })
+  const insertProjection = db.prepare(
+    `INSERT INTO metric_projections
+      (dependency_id, metric, scope, as_of, progress, projected, method, fit_window_n,
+       confidence, is_crossing, note)
+     VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)`,
+  )
+  for (const row of projections) {
+    insertProjection.run(
+      row.dependency_id,
+      row.metric,
+      row.scope,
+      row.as_of,
+      row.progress,
+      row.method,
+      row.fit_window_n,
+      row.confidence,
+      row.is_crossing,
+      row.note,
+    )
+  }
+
   // raw_documents: the on-disk fetch cache, mirrored into the DB for querying.
   const insertRawDocument = db.prepare(
     `INSERT OR IGNORE INTO raw_documents (url, url_hash, fetched_at, text, source_type)
@@ -320,8 +525,14 @@ const main = async (): Promise<void> => {
       `${companies.length} companies, ${companyUrls.length} company_urls, ` +
       `${companySectors.length} company_sectors, ` +
       `${fundingRounds.length} funding_rounds, ${challenges.length} challenges, ` +
-      `${dependencies.length} dependencies, ${companyDependencies.length} company_dependencies, ` +
-      `${assessments.length} dependency_assessments, ${rawDocuments.length} raw_documents` +
+      `${dependencies.length} dependencies, ${thresholdsInserted} dependency_thresholds, ` +
+      `${companyDependencies.length} company_dependencies, ` +
+      `${assessments.length} dependency_assessments, ${observationsInserted} metric_observations, ` +
+      `${linksInserted} dependency_links, ${projections.length} metric_projections, ` +
+      `${rawDocuments.length} raw_documents` +
+      (baselineEquals || baselinePast
+        ? ` (${baselineEquals} baseline==threshold, ${baselinePast} baseline-past-threshold — progress null)`
+        : '') +
       (skipped ? ` (${skipped} child rows skipped — unresolved FK)` : ''),
   )
   console.log('\nDONE\n')

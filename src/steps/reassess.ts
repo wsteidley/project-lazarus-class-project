@@ -85,6 +85,23 @@ const main = async (): Promise<void> => {
   // Assessments attach to canonical dependencies, not companies: the "now" verdict
   // for a shared dependency is established once, not re-derived per company.
   const dependencies = await readCsv(seedPath)
+  // v2 moved the bar out of dependencies.csv into dependency_thresholds.csv. Attach each
+  // dependency's primary bar so the search query + prompt keep their threshold context.
+  const thresholdPath = inputFile('dependency_thresholds.csv')
+  const primaryBar = new Map<string, CsvRow>()
+  if (existsSync(thresholdPath)) {
+    for (const bar of await readCsv(thresholdPath)) {
+      if (bar.dependency_name && !primaryBar.has(bar.dependency_name)) {
+        primaryBar.set(bar.dependency_name, bar)
+      }
+    }
+  }
+  for (const dependency of dependencies) {
+    const bar = primaryBar.get(dependency.name ?? '')
+    dependency.threshold_metric = bar?.metric ?? ''
+    dependency.threshold_value = bar?.threshold_value ?? ''
+    dependency.threshold_unit = bar?.threshold_unit ?? ''
+  }
   const runDir = latestRunDir()
 
   const assessed = await processInBatches(

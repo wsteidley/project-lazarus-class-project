@@ -33,15 +33,28 @@ const runDirs = (): string[] => {
     .sort()
 }
 
-// Creates a fresh timestamped run folder and returns its path. Called by step1.
+// When the pipeline orchestrator owns the run, it exports RUN_DIR so every stage it
+// shells out to lands in one folder — pinning a fresh full run and honoring --run-dir
+// without any stage having to thread the path through. Read at call time (not via the
+// import-time config snapshot) so a per-process override always takes effect.
+const runDirOverride = (): string | undefined => process.env.RUN_DIR || undefined
+
+// Creates a fresh timestamped run folder and returns its path. Called by step1. Under a
+// RUN_DIR override, returns (and creates) exactly that folder instead of a new stamp, so
+// a resumed or orchestrator-pinned run reuses the same directory.
 export const newRunDir = async (): Promise<string> => {
-  const dir = join(outputBaseDir, runStamp())
+  const dir = runDirOverride() ?? join(outputBaseDir, runStamp())
   await mkdir(dir, { recursive: true })
   return dir
 }
 
-// Newest existing run folder. Steps after step1 flow into this.
+// Newest existing run folder. Steps after step1 flow into this. A RUN_DIR override wins,
+// so the orchestrator can direct every stage at a specific run dir.
 export const latestRunDir = (): string => {
+  const override = runDirOverride()
+  if (override) {
+    return override
+  }
   const dir = runDirs().at(-1)
   if (!dir) {
     throw new Error(`No run folders in ${outputBaseDir} — run step1 to start a run`)

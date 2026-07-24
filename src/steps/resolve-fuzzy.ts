@@ -118,6 +118,10 @@ const main = async (): Promise<void> => {
       'uv is not installed — skipping the Splink fuzzy tier (costs merge recall, not a run). ' +
         'Install uv to enable it. DONE\n',
     )
+    // Machine-readable marker (on stderr, which the orchestrator captures while stdout
+    // streams live) so the pipeline records this as `skipped` (exit 0) rather than `ok`.
+    // A present-but-failed link.py still exits non-zero below and is a real failure.
+    console.error('##SKIP## uv not installed')
     return
   }
   if (probe.error) {

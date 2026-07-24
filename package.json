@@ -22,6 +22,7 @@
     "derive": "tsx src/steps/derive-outcomes.ts",
     "reassess": "tsx src/steps/reassess.ts",
     "build": "tsx src/steps/build-db.ts",
+    "pipeline": "tsx src/steps/pipeline.ts",
     "clean": "tsx src/steps/clean.ts",
     "build-sources": "tsx src/sources/build-sources.ts",
     "typecheck": "tsc --noEmit",

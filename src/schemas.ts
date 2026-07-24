@@ -121,6 +121,46 @@ export const ASSESSMENT_STATUS = [
   'unknown',
 ] as const
 
+// How to read a dependency's threshold row. A blank must never be ambiguous:
+// `quantitative_with_threshold` carries a real crossing bar (value+unit+direction+source
+// all required); `quantitative_tbd` is measurable but the bar isn't set yet; `qualitative`
+// has no number by nature.
+export const THRESHOLD_KIND = [
+  'quantitative_with_threshold',
+  'quantitative_tbd',
+  'qualitative',
+] as const
+
+// Which way "better" runs for a threshold. Required, because the crossing arithmetic is
+// identical but the meaning inverts: a battery price falling past $100/kWh (below_is_better)
+// is good; an interconnection queue rising past 2 years (above_is_better bar, moving away)
+// is bad. Without this a crossing test cannot tell viability from regression.
+export const THRESHOLD_DIRECTION = ['below_is_better', 'above_is_better'] as const
+
+// How a metric observation was produced. Keeps grounded numbers separable from generated
+// ones: `curated` = hand-entered from a cited report, `feed` = pulled programmatically,
+// `llm` = emitted by the reassess pass.
+export const OBSERVATION_METHOD = ['curated', 'feed', 'llm'] as const
+
+// How one dependency causes another. IRENA attributes US/German solar LCOE at ~2x China's
+// to permitting/interconnection/balance-of-system — so interconnection partly `drives` solar
+// economics. Storing the relation makes those chains traceable rather than hidden.
+export const DEPENDENCY_RELATION = ['drives', 'enables', 'blocks'] as const
+
+// How a projected point was extrapolated. v2 fits a line to the recent normalized-progress
+// slope; a Wright's-law fit over cumulative capacity is the v3 upgrade for cost-curve heroes.
+export const PROJECTION_METHOD = ['linear_progress_fit'] as const
+
+// Whether a series' baseline can express a 0->1 progress range. `ok` means progress is
+// computable; the other two mean it is NULL with a stated reason: `baseline_equals_threshold`
+// (B == T, would divide by zero — interconnection), `baseline_past_threshold` (baseline already
+// satisfies the bar, would invert — a declared baseline that postdates viability, e.g. battery).
+export const BASELINE_STATUS = [
+  'ok',
+  'baseline_equals_threshold',
+  'baseline_past_threshold',
+] as const
+
 // step1: structured company info + challenges extracted from a single article.
 // A challenge applies to survivors and failures alike; the outcome carries which.
 export const challengeSchema = z.object({
@@ -290,8 +330,76 @@ export const dependencyAssessmentSchema = z.object({
   contested_note: z.string().nullable().describe('What the disagreement is; else null'),
 })
 
+// A single dated metric observation — one row per (dependency x date x scope), the
+// grounded fact that a crossing test consumes. Curated rows are hand-entered from a cited
+// report and reviewed in the PR; `feed` rows may be written programmatically. Append-only:
+// a correction is a new row with a later as_of, never an overwrite.
+export const metricObservationSchema = z.object({
+  dependency_name: z
+    .string()
+    .describe('Canonical dependencies.csv name this observation attaches to'),
+  metric: z.string().describe('The quantity measured, e.g. "battery pack price"'),
+  value: z.number().describe('The observed value, as a number'),
+  unit: z.string().describe('Unit for the value, e.g. "USD/kWh"'),
+  as_of: z.string().describe('ISO date or year the value describes (not when it was recorded)'),
+  scope: z.string().describe('Region the value covers: global / US / EU / CN / NO …'),
+  method: z.enum(OBSERVATION_METHOD).describe('How the observation was produced'),
+  source_url: z.string().describe('URL the value came from; required when method=curated'),
+  source_name: z
+    .string()
+    .describe('Human-readable source name, e.g. "BNEF 2025 Battery Price Survey"'),
+  note: z.string().nullable().describe('Free-text caveat, e.g. segment breakdown; else null'),
+})
+
+// One crossing bar, keyed on (dependency, metric, scope) so a dependency can carry several
+// bars by slice (carbon $50 global vs. a Norway bar) without them colliding. A `qualitative`
+// dependency has no row here; a `quantitative_tbd` one may have a row with a null value. When
+// contested, the alt bar lets the derivation compute progress against both and flag the
+// crossing rather than silently pick a side.
+export const dependencyThresholdSchema = z.object({
+  dependency_name: z.string().describe('Canonical dependencies.csv name this bar attaches to'),
+  metric: z.string().describe('The quantity the bar is set on, e.g. "battery pack price"'),
+  scope: z.string().describe('Region the bar applies to: global / US / EU / NO …'),
+  threshold_value: z
+    .number()
+    .nullable()
+    .describe('The value at which the dependency stops blocking'),
+  threshold_unit: z.string().describe('Unit for the value, e.g. "USD/kWh"'),
+  threshold_direction: z.enum(THRESHOLD_DIRECTION).describe('Which side of the bar is viable'),
+  threshold_source_url: z.string().describe('URL the bar came from'),
+  threshold_as_of: z.string().describe('When the bar was last reviewed'),
+  threshold_note: z.string().nullable().describe('Free-text caveat; else null'),
+  threshold_contested: z.boolean().describe('True if the literature disputes this bar'),
+  threshold_alt_value: z
+    .number()
+    .nullable()
+    .describe('The disputed alternative bar, when contested'),
+  threshold_alt_source_url: z.string().nullable().describe('URL for the alternative bar'),
+  threshold_contested_note: z.string().nullable().describe('What the dispute is; else null'),
+  baseline_value: z
+    .number()
+    .nullable()
+    .describe(
+      'Attempt-era value (where the metric stood when companies died); null falls back to earliest observation',
+    ),
+  baseline_as_of: z.string().nullable().describe('When the declared baseline was measured'),
+  baseline_note: z.string().nullable().describe('Why this baseline; else null'),
+})
+
+// A causal edge between two dependencies, so chains like interconnection -> solar economics
+// are traceable rather than hidden.
+export const dependencyLinkSchema = z.object({
+  from_dependency: z.string().describe('Canonical name of the driving dependency'),
+  to_dependency: z.string().describe('Canonical name of the affected dependency'),
+  relation: z.enum(DEPENDENCY_RELATION).describe('How from acts on to: drives / enables / blocks'),
+  note: z.string().nullable().describe('Free-text explanation of the link; else null'),
+})
+
 export type DependencyResolution = z.infer<typeof dependencyResolutionSchema>
 export type DependencyAssessment = z.infer<typeof dependencyAssessmentSchema>
+export type MetricObservation = z.infer<typeof metricObservationSchema>
+export type DependencyThreshold = z.infer<typeof dependencyThresholdSchema>
+export type DependencyLink = z.infer<typeof dependencyLinkSchema>
 
 // Phase 2b: the retrospective outcome pass. Same evidence shape as
 // dependencyAssessmentSchema (confidence/contested/snippet), but for what became of a

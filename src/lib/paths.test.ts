@@ -54,4 +54,19 @@ describe('run folders', () => {
     const { latestRunDir } = await import('./paths.js')
     expect(() => latestRunDir()).toThrow(/step1/)
   })
+
+  it('RUN_DIR override pins both newRunDir and latestRunDir', async () => {
+    const pinned = join(tempDir, 'output', 'pinned-run')
+    process.env.RUN_DIR = pinned
+    try {
+      const { newRunDir, latestRunDir } = await import('./paths.js')
+      // newRunDir returns and creates exactly the override, not a fresh stamp.
+      expect(await newRunDir()).toBe(pinned)
+      // latestRunDir returns the override even with older stamped folders present.
+      mkdirSync(join(tempDir, 'output', '2000-01-01T00-00-00Z'), { recursive: true })
+      expect(latestRunDir()).toBe(pinned)
+    } finally {
+      delete process.env.RUN_DIR
+    }
+  })
 })

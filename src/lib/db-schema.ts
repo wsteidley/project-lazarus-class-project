@@ -5,11 +5,16 @@ import {
   CONFIDENCE,
   CRITICALITY,
   DEPENDENCY,
+  DEPENDENCY_RELATION,
   EXIT_TYPE,
   LIVING_STATUS,
+  OBSERVATION_METHOD,
   OUTCOME_TYPE,
+  PROJECTION_METHOD,
   REGION,
   ROUND,
+  THRESHOLD_DIRECTION,
+  THRESHOLD_KIND,
   URL_TYPE,
 } from '../schemas.js'
 import { SOURCE_TYPE } from './raw-documents.js'
@@ -136,17 +141,80 @@ CREATE TABLE challenges (
 -- ("battery pack price"), shared across every company that needed it. Companies
 -- attach via company_dependencies, and assessments attach here — so the "now"
 -- verdict is established once rather than re-derived per company.
+-- Identity only. The crossing bars moved to dependency_thresholds (v2): one dependency now
+-- needs several bars by slice (carbon global vs. Norway), which one-row-per-dependency
+-- columns can't hold. threshold_kind stays here — it's a property of the dependency, not of
+-- a per-scope bar.
 CREATE TABLE dependencies (
   id               INTEGER PRIMARY KEY,
   uuid             TEXT,
   name             TEXT NOT NULL,
   category         TEXT ${checkIn('category', DEPENDENCY)},
   description      TEXT,
-  -- The value at which this dependency stops blocking. Populated in Tier 3; the
-  -- columns exist now so became_viable_date has somewhere to land.
-  threshold_metric TEXT,
-  threshold_value  REAL,
-  threshold_unit   TEXT
+  threshold_kind   TEXT ${checkIn('threshold_kind', THRESHOLD_KIND)}
+);
+
+-- One crossing bar per (dependency, metric, scope) — the same key observations and the
+-- progress derivation use. A qualitative dependency has no row here; a quantitative_tbd one
+-- may have a row with a null threshold_value. When contested, the alt bar lets the
+-- derivation compute progress against both and flag the crossing rather than pick a side.
+CREATE TABLE dependency_thresholds (
+  dependency_id            INTEGER NOT NULL REFERENCES dependencies(id),
+  metric                   TEXT NOT NULL,
+  scope                    TEXT NOT NULL,
+  threshold_value          REAL,
+  threshold_unit           TEXT,
+  threshold_direction      TEXT ${checkIn('threshold_direction', THRESHOLD_DIRECTION)},
+  threshold_source_url     TEXT,
+  threshold_as_of          TEXT,
+  threshold_note           TEXT,
+  threshold_contested      INTEGER DEFAULT 0,
+  threshold_alt_value      REAL,
+  threshold_alt_source_url TEXT,
+  threshold_contested_note TEXT,
+  -- Declared baseline: the attempt-era value, where the metric stood when the companies
+  -- were dying — so progress reads as "how far the world moved since the failures," not
+  -- "the oldest number we happen to have." Null falls back to the earliest observation.
+  baseline_value           REAL,
+  baseline_as_of           TEXT,
+  baseline_note            TEXT,
+  PRIMARY KEY (dependency_id, metric, scope)
+);
+
+-- Causal edges between dependencies (interconnection drives solar economics, …), so the
+-- chains the research surfaced are traceable rather than hidden.
+CREATE TABLE dependency_links (
+  id                 INTEGER PRIMARY KEY,
+  from_dependency_id INTEGER NOT NULL REFERENCES dependencies(id),
+  to_dependency_id   INTEGER NOT NULL REFERENCES dependencies(id),
+  relation           TEXT ${checkIn('relation', DEPENDENCY_RELATION, false)},
+  note               TEXT
+);
+
+-- Tunable knobs for the trajectory view, kept as data (one row) so retuning the slope
+-- window or the plateau cutoff is an UPDATE, not a query edit.
+CREATE TABLE trajectory_config (
+  window_n                INTEGER,
+  plateau_slope_threshold REAL
+);
+
+-- The one derived layer that is genuine computation, not a view: extrapolated future points
+-- for series not yet crossed. Every row is flagged projected=1 with its method and fit
+-- window, so a forecast never masquerades as an observation; is_crossing marks the projected
+-- crossing point.
+CREATE TABLE metric_projections (
+  id            INTEGER PRIMARY KEY,
+  dependency_id INTEGER NOT NULL REFERENCES dependencies(id),
+  metric        TEXT,
+  scope         TEXT,
+  as_of         TEXT,
+  progress      REAL,
+  projected     INTEGER DEFAULT 1,
+  method        TEXT ${checkIn('method', PROJECTION_METHOD)},
+  fit_window_n  INTEGER,
+  confidence    REAL,
+  is_crossing   INTEGER,
+  note          TEXT
 );
 
 CREATE TABLE company_dependencies (
@@ -179,6 +247,25 @@ CREATE TABLE dependency_assessments (
   contested_note   TEXT
 );
 
+-- The grounded trajectory: one row per (dependency x as_of x scope), each a dated,
+-- cited fact about where a metric actually stood. Kept separate from
+-- dependency_assessments so hand-curated/feed numbers never blend with LLM verdicts.
+-- Append-only (no UNIQUE): a correction is a new row with a later as_of, never an
+-- overwrite — overwriting would destroy the trajectory the crossing test depends on.
+CREATE TABLE metric_observations (
+  id            INTEGER PRIMARY KEY,
+  dependency_id INTEGER NOT NULL REFERENCES dependencies(id),
+  metric        TEXT,
+  value         REAL,
+  unit          TEXT,
+  as_of         TEXT,
+  scope         TEXT,
+  method        TEXT ${checkIn('method', OBSERVATION_METHOD)},
+  source_url    TEXT,
+  source_name   TEXT,
+  note          TEXT
+);
+
 -- Content-addressed cache of every fetched document, loaded from the on-disk cache
 -- at build time. source_type drives the freshness policy: discovery text is
 -- immutable, outcome/reassessment results expire.
@@ -190,4 +277,114 @@ CREATE TABLE raw_documents (
   text        TEXT,
   source_type TEXT ${checkIn('source_type', SOURCE_TYPE)}
 );
+
+-- Progress: the normalized plotting layer. Per (dependency, metric, scope), baseline B is the
+-- declared attempt-era value (or the earliest observation as a fallback) and T the bar;
+-- progress reads 0 at baseline, 1 at viability, >1 past the bar, negative if the metric receded
+-- below where it started — dimensionless, so every dependency shares one axis. progress is
+-- baseline-dependent by nature, so it is NULL (with a progress_status reason) when the baseline
+-- can't express a 0->1 range: B == T (divide-by-zero) or B already past the bar (would invert).
+-- Crossing is answered directly in the trajectory view, never from progress. progress_alt is
+-- the same against a contested bar's alternative; log_distance = ln(T/v) is baseline-free and
+-- reads cost-curve (below_is_better) metrics correctly on a log axis.
+CREATE VIEW progress AS
+WITH obs AS (
+  SELECT
+    o.dependency_id, o.metric, o.scope, o.as_of,
+    o.value AS value_raw, o.unit,
+    FIRST_VALUE(o.value) OVER (
+      PARTITION BY o.dependency_id, o.metric, o.scope ORDER BY o.as_of
+    ) AS earliest_value
+  FROM metric_observations o
+),
+joined AS (
+  SELECT
+    obs.dependency_id, obs.metric, obs.scope, obs.as_of, obs.value_raw, obs.unit,
+    COALESCE(t.baseline_value, obs.earliest_value) AS baseline,
+    t.threshold_value AS threshold, t.threshold_direction AS direction,
+    t.threshold_contested AS contested, t.threshold_alt_value AS threshold_alt
+  FROM obs
+  JOIN dependency_thresholds t
+    ON t.dependency_id = obs.dependency_id AND t.metric = obs.metric AND t.scope = obs.scope
+  WHERE t.threshold_value IS NOT NULL
+),
+statused AS (
+  SELECT
+    joined.*,
+    CASE
+      WHEN baseline = threshold THEN 'baseline_equals_threshold'
+      WHEN (direction = 'below_is_better' AND baseline < threshold)
+        OR (direction = 'above_is_better' AND baseline > threshold) THEN 'baseline_past_threshold'
+      ELSE 'ok'
+    END AS progress_status
+  FROM joined
+)
+SELECT
+  s.dependency_id, s.metric, s.scope, s.as_of, s.value_raw, s.unit, s.baseline,
+  s.threshold, s.direction, s.contested, s.threshold_alt, s.progress_status,
+  CASE WHEN s.progress_status = 'ok' THEN
+    CASE s.direction
+      WHEN 'below_is_better' THEN (s.baseline - s.value_raw) / (s.baseline - s.threshold)
+      WHEN 'above_is_better' THEN (s.value_raw - s.baseline) / (s.threshold - s.baseline)
+    END
+  END AS progress,
+  CASE WHEN s.progress_status = 'ok' AND s.contested = 1 AND s.threshold_alt IS NOT NULL THEN
+    CASE s.direction
+      WHEN 'below_is_better' THEN (s.baseline - s.value_raw) / NULLIF(s.baseline - s.threshold_alt, 0)
+      WHEN 'above_is_better' THEN (s.value_raw - s.baseline) / NULLIF(s.threshold_alt - s.baseline, 0)
+    END
+  END AS progress_alt,
+  CASE WHEN s.direction = 'below_is_better' AND s.value_raw > 0 AND s.threshold > 0
+    THEN ln(s.threshold / s.value_raw) END AS log_distance
+FROM statused s;
+
+-- Trajectory: one summary row per series. Not pure — it needs an ordered window and tunable
+-- cutoffs, so the window size and plateau threshold come from trajectory_config (data, not
+-- baked SQL). slope is Δprogress over the trailing window in progress-per-year; the state
+-- (direction of travel) falls out of its sign and magnitude. currently_crossed and
+-- became_viable_date are DIRECT scalar tests of the value against the bar — baseline-free, so a
+-- bad baseline can never invert the viability answer the ranking keys on.
+CREATE VIEW trajectory AS
+WITH ranked AS (
+  SELECT
+    p.dependency_id, p.metric, p.scope, p.as_of, p.progress,
+    p.value_raw, p.threshold, p.direction,
+    ROW_NUMBER() OVER (PARTITION BY p.dependency_id, p.metric, p.scope ORDER BY p.as_of DESC) AS rn_desc,
+    COUNT(*) OVER (PARTITION BY p.dependency_id, p.metric, p.scope) AS n_obs
+  FROM progress p
+),
+paired AS (
+  SELECT
+    l.dependency_id, l.metric, l.scope,
+    l.as_of AS latest_as_of, l.progress AS latest_progress, l.n_obs,
+    l.value_raw AS latest_value, l.threshold, l.direction,
+    s.as_of AS window_start_as_of, s.progress AS window_start_progress,
+    (l.progress - s.progress)
+      / NULLIF((julianday(l.as_of || '-01') - julianday(s.as_of || '-01')) / 365.25, 0) AS slope
+  FROM ranked l
+  JOIN ranked s
+    ON s.dependency_id = l.dependency_id AND s.metric = l.metric AND s.scope = l.scope
+   AND l.rn_desc = 1
+   AND s.rn_desc = MIN(l.n_obs, (SELECT window_n FROM trajectory_config LIMIT 1))
+)
+SELECT
+  paired.dependency_id, paired.metric, paired.scope,
+  paired.latest_as_of, paired.latest_progress, paired.n_obs,
+  paired.window_start_as_of, paired.window_start_progress, paired.slope,
+  CASE
+    WHEN paired.n_obs < 2 OR paired.slope IS NULL THEN 'unknown'
+    WHEN paired.slope > (SELECT plateau_slope_threshold FROM trajectory_config LIMIT 1) THEN 'improving'
+    WHEN paired.slope < -(SELECT plateau_slope_threshold FROM trajectory_config LIMIT 1) THEN 'receded'
+    ELSE 'plateaued'
+  END AS state,
+  CASE
+    WHEN paired.direction = 'below_is_better' AND paired.latest_value <= paired.threshold THEN 1
+    WHEN paired.direction = 'above_is_better' AND paired.latest_value >= paired.threshold THEN 1
+    ELSE 0
+  END AS currently_crossed,
+  (SELECT MIN(p2.as_of) FROM progress p2
+   WHERE p2.dependency_id = paired.dependency_id AND p2.metric = paired.metric AND p2.scope = paired.scope
+     AND ((p2.direction = 'below_is_better' AND p2.value_raw <= p2.threshold)
+       OR (p2.direction = 'above_is_better' AND p2.value_raw >= p2.threshold))) AS became_viable_date
+FROM paired;
 `
