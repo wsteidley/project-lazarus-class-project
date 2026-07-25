@@ -4,7 +4,7 @@ import { DatabaseSync } from 'node:sqlite'
 import { classifyBaseline } from '../lib/baseline.js'
 import { type CsvRow, readCsv } from '../lib/csv.js'
 import { createTablesSql } from '../lib/db-schema.js'
-import { inputFile, latestRunDir } from '../lib/paths.js'
+import { curatedFile, latestRunDir } from '../lib/paths.js'
 import { computeProjections, type ProgressPoint } from '../lib/projection.js'
 import { readAllCachedDocuments } from '../lib/raw-documents.js'
 import {
@@ -50,22 +50,22 @@ const main = async (): Promise<void> => {
   if (companies.length === 0) {
     throw new Error(`No companies.csv in ${runDir}; run step1 first`)
   }
-  const ideaSpaces = await readCsvIfExists(inputFile('idea_spaces.csv'))
+  const ideaSpaces = await readCsvIfExists(curatedFile('idea_spaces.csv'))
   const companyUrls = await readCsvIfExists(join(runDir, 'company_urls.csv'))
   const companySectors = await readCsvIfExists(join(runDir, 'company_sectors.csv'))
   const fundingRounds = await readCsvIfExists(join(runDir, 'funding_rounds.csv'))
   const challenges = await readCsvIfExists(join(runDir, 'challenges.csv'))
   // The canonical dependency dimension is a curated input, not a run output.
-  const dependencies = await readCsvIfExists(inputFile('dependencies.csv'))
+  const dependencies = await readCsvIfExists(curatedFile('dependencies.csv'))
   const companyDependencies = await readCsvIfExists(join(runDir, 'company_dependencies.csv'))
   const assessments = await readCsvIfExists(join(runDir, 'dependency_assessments.csv'))
   // Curated, dated, cited metric facts — a curated input like dependencies.csv, not a run
   // output. Kept separate from the LLM-generated assessments above.
-  const metricObservations = await readCsvIfExists(inputFile('metric_observations.csv'))
+  const metricObservations = await readCsvIfExists(curatedFile('metric_observations.csv'))
   // v2 threshold layer: bars keyed (dependency, metric, scope), and causal links between
   // dependencies. Curated inputs.
-  const thresholds = await readCsvIfExists(inputFile('dependency_thresholds.csv'))
-  const dependencyLinks = await readCsvIfExists(inputFile('dependency_links.csv'))
+  const thresholds = await readCsvIfExists(curatedFile('dependency_thresholds.csv'))
+  const dependencyLinks = await readCsvIfExists(curatedFile('dependency_links.csv'))
   const rawDocuments = await readAllCachedDocuments()
 
   if (existsSync(dbFile)) {

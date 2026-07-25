@@ -170,7 +170,8 @@ dist/
 npm-debug.log*
 
 # Pipeline output: scraped data and timestamped run folders (incl. built DBs).
-# data/input/ (the curated idea_spaces seed) is intentionally NOT ignored.
+# data/curated/ (human-authored seeds) and data/derived/ (build-metric-data output)
+# are intentionally NOT ignored — the rebuild-and-diff audit needs derived tracked.
 data/scraped/
 data/output/
 data/kaggle/

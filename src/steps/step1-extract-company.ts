@@ -3,7 +3,7 @@ import { existsSync } from 'node:fs'
 import { config } from '../config.js'
 import { processInBatches } from '../lib/batch.js'
 import { type CsvRow, readCsv, writeTableCsv } from '../lib/csv.js'
-import { inputFile, latestScrapedDataFile, newRunDir } from '../lib/paths.js'
+import { curatedFile, latestScrapedDataFile, newRunDir } from '../lib/paths.js'
 import { utcTimestamp } from '../lib/timestamp.js'
 import { buildChatModel } from '../llm.js'
 import { type CompanyExtraction, companyExtractionSchema } from '../schemas.js'
@@ -22,7 +22,7 @@ const bit = (value: boolean | null): 0 | 1 | '' => (value === null ? '' : value 
 // Loads the curated idea_spaces seed (name + description) to inject into the
 // prompt and to validate the model's choice against. Missing seed => no mapping.
 const loadIdeaSpaces = async (): Promise<{ names: Set<string>; promptList: string }> => {
-  const seedPath = inputFile('idea_spaces.csv')
+  const seedPath = curatedFile('idea_spaces.csv')
   if (!existsSync(seedPath)) {
     console.warn(`No curated ${seedPath} — idea_space_name will be left unmapped`)
     return { names: new Set(), promptList: '(none provided)' }

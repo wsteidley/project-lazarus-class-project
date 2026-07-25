@@ -3,7 +3,7 @@ import { existsSync } from 'node:fs'
 import { config } from '../config.js'
 import { processInBatches } from '../lib/batch.js'
 import { type CsvRow, readCsv, writeTableCsv } from '../lib/csv.js'
-import { inputFile, latestRunDir } from '../lib/paths.js'
+import { curatedFile, latestRunDir } from '../lib/paths.js'
 import { utcTimestamp } from '../lib/timestamp.js'
 import { buildChatModel } from '../llm.js'
 import {
@@ -78,7 +78,7 @@ const main = async (): Promise<void> => {
   const assessedOn = utcTimestamp()
   console.log(assessedOn)
 
-  const seedPath = inputFile('dependencies.csv')
+  const seedPath = curatedFile('dependencies.csv')
   if (!existsSync(seedPath)) {
     throw new Error(`No ${seedPath} — the canonical dependency seed is required for reassess`)
   }
@@ -87,7 +87,7 @@ const main = async (): Promise<void> => {
   const dependencies = await readCsv(seedPath)
   // v2 moved the bar out of dependencies.csv into dependency_thresholds.csv. Attach each
   // dependency's primary bar so the search query + prompt keep their threshold context.
-  const thresholdPath = inputFile('dependency_thresholds.csv')
+  const thresholdPath = curatedFile('dependency_thresholds.csv')
   const primaryBar = new Map<string, CsvRow>()
   if (existsSync(thresholdPath)) {
     for (const bar of await readCsv(thresholdPath)) {

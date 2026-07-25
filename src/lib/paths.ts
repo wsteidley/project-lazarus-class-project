@@ -1,11 +1,15 @@
 import { existsSync, readdirSync, statSync } from 'node:fs'
 import { mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
-import { inputDir, outputBaseDir, scrapedDir } from '../config.js'
+import { curatedDir, derivedDir, outputBaseDir, scrapedDir } from '../config.js'
 import { runStamp } from './timestamp.js'
 
-// Path to a curated input file, e.g. inputFile('idea_spaces.csv').
-export const inputFile = (name: string): string => join(inputDir, name)
+// Path to a human-authored input file, e.g. curatedFile('idea_spaces.csv').
+export const curatedFile = (name: string): string => join(curatedDir, name)
+
+// Path to a build-metric-data output, e.g. derivedFile('capacity_series.csv'). Generated;
+// read it freely, but only build-metric-data writes here.
+export const derivedFile = (name: string): string => join(derivedDir, name)
 
 // Newest scraped article data file (excludes the *_data_index.csv companion).
 // step1/step1b use this so you never have to name the scrape.

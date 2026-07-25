@@ -52,7 +52,7 @@ The stages are:
 - **step1b** — a separate LLM pass decomposing each idea into its dependencies.
   Writes `data/idea_dependencies.csv` (free text, one row per company).
 - **step1c** — resolves those free-text dependencies onto the curated canonical list
-  in `data/input/dependencies.csv`, merging duplicates per company. Writes
+  in `data/curated/dependencies.csv`, merging duplicates per company. Writes
   `company_dependencies.csv`. Anything that matches nothing canonical is kept with a
   blank name and reported, never silently dropped — add it to the seed and re-run.
 - **resolve** — merges duplicate companies into canonical rows, ID-first over
@@ -85,7 +85,7 @@ The stages are:
   keys, and enabling FK enforcement. Also mirrors the fetch cache into
   `raw_documents`.
 
-`data/input/idea_spaces.csv` and `data/input/dependencies.csv` are **curated seeds**
+`data/curated/idea_spaces.csv` and `data/curated/dependencies.csv` are **curated seeds**
 you maintain; step1 only maps companies into idea spaces you've defined, and step1c
 only resolves dependencies onto canonical rows you've defined. The quality of the
 head-to-head comparisons depends on both. Controlled-vocabulary fields are enforced
@@ -162,7 +162,7 @@ Environment variables (see `.env.example`):
 
 ### Running the pipeline
 
-Populate the curated `data/input/idea_spaces.csv` and `data/input/dependencies.csv`
+Populate the curated `data/curated/idea_spaces.csv` and `data/curated/dependencies.csv`
 first (starter files are included). Each step auto-resolves the latest input, so no
 paths to pass:
 

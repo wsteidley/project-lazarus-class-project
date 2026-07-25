@@ -7,7 +7,7 @@ import {
   dedupeCompanyDependencies,
   matchCanonical,
 } from '../lib/dependency-resolution.js'
-import { inputFile, latestRunDir } from '../lib/paths.js'
+import { curatedFile, latestRunDir } from '../lib/paths.js'
 import { utcTimestamp } from '../lib/timestamp.js'
 import { buildChatModel } from '../llm.js'
 import { type DependencyResolution, dependencyResolutionSchema } from '../schemas.js'
@@ -18,7 +18,7 @@ const loadCanonicalDependencies = async (): Promise<{
   names: string[]
   promptList: string
 }> => {
-  const seedPath = inputFile('dependencies.csv')
+  const seedPath = curatedFile('dependencies.csv')
   if (!existsSync(seedPath)) {
     throw new Error(`No ${seedPath} — the canonical dependency seed is required for step1c`)
   }
@@ -91,7 +91,7 @@ const main = async (): Promise<void> => {
     for (const row of unresolved) {
       console.warn(`  - ${row.detail}`)
     }
-    console.warn('Add them to data/input/dependencies.csv and re-run to pick them up.\n')
+    console.warn('Add them to data/curated/dependencies.csv and re-run to pick them up.\n')
   }
 
   await writeTableCsv(merged, runDir, 'company_dependencies.csv')
