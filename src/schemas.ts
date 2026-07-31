@@ -147,9 +147,12 @@ export const OBSERVATION_METHOD = ['curated', 'feed', 'llm'] as const
 // economics. Storing the relation makes those chains traceable rather than hidden.
 export const DEPENDENCY_RELATION = ['drives', 'enables', 'blocks'] as const
 
-// How a projected point was extrapolated. v2 fits a line to the recent normalized-progress
-// slope; a Wright's-law fit over cumulative capacity is the v3 upgrade for cost-curve heroes.
-export const PROJECTION_METHOD = ['linear_progress_fit'] as const
+// How a projected point was extrapolated. `linear_progress_fit` fits a line to the recent
+// normalized-progress slope — the general case, and the fallback. `wright` is the
+// physically-motivated model for cost-curve heroes: cost falls a fixed fraction per doubling
+// of cumulative capacity, so the fit is over deployment rather than time. Which one produced
+// a row is recorded per point, because they answer with different kinds of confidence.
+export const PROJECTION_METHOD = ['linear_progress_fit', 'wright'] as const
 
 // Whether a series' baseline can express a 0->1 progress range. `ok` means progress is
 // computable; the other two mean it is NULL with a stated reason: `baseline_equals_threshold`

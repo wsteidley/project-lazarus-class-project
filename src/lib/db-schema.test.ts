@@ -171,4 +171,113 @@ describe('createTablesSql', () => {
     expect(() => insert.run(9999, 'x', 1, 'u', '2025-01', 'global', 'curated')).toThrow()
     db.close()
   })
+
+  // basis distinguishes two series that share a unit — USD/W nominal vs USD/W constant-2024
+  // are different measurements, and comparing one against the other's bar answers wrong.
+  it('carries basis on an observation so unit alone does not identify a series', () => {
+    const db = freshDb()
+    const depId = Number(
+      db.prepare('INSERT INTO dependencies (name) VALUES (?)').run('Solar module cost')
+        .lastInsertRowid,
+    )
+    db.prepare(
+      `INSERT INTO metric_observations (dependency_id, metric, value, unit, basis, as_of, scope, method)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(depId, 'module price', 0.26, 'USD/W', 'real_2024_usd', '2024-12', 'global', 'curated')
+    const row = db
+      .prepare('SELECT unit, basis FROM metric_observations WHERE dependency_id = ?')
+      .get(depId) as { unit: string; basis: string }
+    expect(row).toEqual({ unit: 'USD/W', basis: 'real_2024_usd' })
+    db.close()
+  })
+
+  it('stores a capacity_series point under a dependency FK, with its scenario', () => {
+    const db = freshDb()
+    const depId = Number(
+      db.prepare('INSERT INTO dependencies (name) VALUES (?)').run('Solar module cost')
+        .lastInsertRowid,
+    )
+    const insert = db.prepare(
+      `INSERT INTO capacity_series (dependency_id, metric, value, unit, basis, as_of, scope, scenario, method)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    insert.run(
+      depId,
+      'cumulative solar PV capacity',
+      1866.31,
+      'GW',
+      'AC',
+      '2024-12',
+      'global',
+      'historical',
+      'curated',
+    )
+    const row = db
+      .prepare('SELECT value, scenario FROM capacity_series WHERE dependency_id = ?')
+      .get(depId) as { value: number; scenario: string }
+    expect(row).toEqual({ value: 1866.31, scenario: 'historical' })
+    expect(() =>
+      insert.run(9999, 'm', 1, 'GW', 'AC', '2024-12', 'global', 'historical', 'curated'),
+    ).toThrow()
+    db.close()
+  })
+})
+
+// The `conditional` state is the ETS-vs-NZS signal: a dependency that does not cross on
+// economics alone but does under a support regime. For a failed company that means
+// "revivable, but only if the policy regime it needed now exists" — a different answer from
+// "the cost curve fixed it", which is why it outranks the economics-only arms.
+describe('trajectory view — conditional state', () => {
+  const seed = (policyDependent: number): DatabaseSync => {
+    const db = freshDb()
+    db.prepare(
+      'INSERT INTO trajectory_config (window_n, plateau_slope_threshold) VALUES (?, ?)',
+    ).run(3, 0.03)
+    const depId = Number(
+      db.prepare('INSERT INTO dependencies (name) VALUES (?)').run('Green hydrogen production cost')
+        .lastInsertRowid,
+    )
+    db.prepare(
+      `INSERT INTO dependency_thresholds
+        (dependency_id, metric, scope, threshold_value, threshold_direction, policy_dependent,
+         baseline_value)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    ).run(depId, 'hydrogen price', 'global', 2, 'below_is_better', policyDependent, 10)
+    const insert = db.prepare(
+      `INSERT INTO metric_observations (dependency_id, metric, value, unit, as_of, scope, method)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    )
+    // Improving on economics, but still well short of the bar.
+    insert.run(depId, 'hydrogen price', 8, 'USD/kg', '2022-12', 'global', 'curated')
+    insert.run(depId, 'hydrogen price', 6, 'USD/kg', '2024-12', 'global', 'curated')
+    insert.run(depId, 'hydrogen price', 4.5, 'USD/kg', '2026-06', 'global', 'curated')
+    return db
+  }
+
+  const stateOf = (db: DatabaseSync): string =>
+    (db.prepare('SELECT state FROM trajectory').get() as { state: string }).state
+
+  it('resolves to conditional when policy_dependent and still short of the bar', () => {
+    const db = seed(1)
+    expect(stateOf(db)).toBe('conditional')
+    db.close()
+  })
+
+  // Same numbers, same slope — only the flag differs. That isolates the new branch.
+  it('falls through to the economics-only states when the flag is off', () => {
+    const db = seed(0)
+    expect(stateOf(db)).toBe('improving')
+    db.close()
+  })
+
+  it('does not claim conditional once the metric is past its bar', () => {
+    const db = seed(1)
+    const depId = (db.prepare('SELECT id FROM dependencies').get() as { id: number }).id
+    db.prepare(
+      `INSERT INTO metric_observations (dependency_id, metric, value, unit, as_of, scope, method)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    ).run(depId, 'hydrogen price', 1.5, 'USD/kg', '2027-12', 'global', 'curated')
+    expect(stateOf(db)).not.toBe('conditional')
+    db.close()
+  })
 })

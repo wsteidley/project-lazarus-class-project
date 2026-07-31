@@ -172,6 +172,13 @@ CREATE TABLE dependency_thresholds (
   threshold_alt_value      REAL,
   threshold_alt_source_url TEXT,
   threshold_contested_note TEXT,
+  -- Marks a dependency that does not cross its bar on economics alone but does under a
+  -- support regime (subsidy, mandate, carbon price) — hydrogen, DAC, electrolyzers. It
+  -- drives the 'conditional' trajectory state, which for a failed company means "revivable,
+  -- but only if the policy regime it needed now exists" — a different answer from "the cost
+  -- curve fixed it". Deliberately a flag and not a second bar: threshold_alt already means
+  -- "contested" on Direct air capture, and one column cannot mean both on the flagship row.
+  policy_dependent         INTEGER DEFAULT 0,
   -- Declared baseline: the attempt-era value, where the metric stood when the companies
   -- were dying — so progress reads as "how far the world moved since the failures," not
   -- "the oldest number we happen to have." Null falls back to the earliest observation.
@@ -252,14 +259,43 @@ CREATE TABLE dependency_assessments (
 -- dependency_assessments so hand-curated/feed numbers never blend with LLM verdicts.
 -- Append-only (no UNIQUE): a correction is a new row with a later as_of, never an
 -- overwrite — overwriting would destroy the trajectory the crossing test depends on.
+-- basis is not decoration: unit alone does not identify a series. USD/W in nominal
+-- dollars and USD/W in constant 2024 dollars are different measurements, and comparing one
+-- against a bar declared on the other silently answers the viability question wrong. One
+-- basis per series (v3 Fix 2).
 CREATE TABLE metric_observations (
   id            INTEGER PRIMARY KEY,
   dependency_id INTEGER NOT NULL REFERENCES dependencies(id),
   metric        TEXT,
   value         REAL,
   unit          TEXT,
+  basis         TEXT,
   as_of         TEXT,
   scope         TEXT,
+  method        TEXT ${checkIn('method', OBSERVATION_METHOD)},
+  source_url    TEXT,
+  source_name   TEXT,
+  note          TEXT
+);
+
+-- Cumulative deployment per technology — the x-axis of a learning curve. Kept apart from
+-- metric_observations because it answers a different question ("how much has been built?"
+-- not "where does the metric stand?") and feeds one consumer: the Wright's-law fit, which
+-- needs cost against cumulative capacity rather than cost against time.
+--
+-- scenario is carried explicitly so a forecast capacity path can never be read as
+-- observed history. Everything committed today is 'historical'; the column exists so that
+-- if a scenario series is ever added, the fit can refuse to treat it as evidence.
+CREATE TABLE capacity_series (
+  id            INTEGER PRIMARY KEY,
+  dependency_id INTEGER NOT NULL REFERENCES dependencies(id),
+  metric        TEXT,
+  value         REAL,
+  unit          TEXT,
+  basis         TEXT,
+  as_of         TEXT,
+  scope         TEXT,
+  scenario      TEXT,
   method        TEXT ${checkIn('method', OBSERVATION_METHOD)},
   source_url    TEXT,
   source_name   TEXT,
@@ -302,7 +338,8 @@ joined AS (
     obs.dependency_id, obs.metric, obs.scope, obs.as_of, obs.value_raw, obs.unit,
     COALESCE(t.baseline_value, obs.earliest_value) AS baseline,
     t.threshold_value AS threshold, t.threshold_direction AS direction,
-    t.threshold_contested AS contested, t.threshold_alt_value AS threshold_alt
+    t.threshold_contested AS contested, t.threshold_alt_value AS threshold_alt,
+    t.policy_dependent AS policy_dependent
   FROM obs
   JOIN dependency_thresholds t
     ON t.dependency_id = obs.dependency_id AND t.metric = obs.metric AND t.scope = obs.scope
@@ -321,7 +358,8 @@ statused AS (
 )
 SELECT
   s.dependency_id, s.metric, s.scope, s.as_of, s.value_raw, s.unit, s.baseline,
-  s.threshold, s.direction, s.contested, s.threshold_alt, s.progress_status,
+  s.threshold, s.direction, s.contested, s.threshold_alt, s.policy_dependent,
+  s.progress_status,
   CASE WHEN s.progress_status = 'ok' THEN
     CASE s.direction
       WHEN 'below_is_better' THEN (s.baseline - s.value_raw) / (s.baseline - s.threshold)
@@ -348,7 +386,7 @@ CREATE VIEW trajectory AS
 WITH ranked AS (
   SELECT
     p.dependency_id, p.metric, p.scope, p.as_of, p.progress,
-    p.value_raw, p.threshold, p.direction,
+    p.value_raw, p.threshold, p.direction, p.policy_dependent,
     ROW_NUMBER() OVER (PARTITION BY p.dependency_id, p.metric, p.scope ORDER BY p.as_of DESC) AS rn_desc,
     COUNT(*) OVER (PARTITION BY p.dependency_id, p.metric, p.scope) AS n_obs
   FROM progress p
@@ -357,7 +395,7 @@ paired AS (
   SELECT
     l.dependency_id, l.metric, l.scope,
     l.as_of AS latest_as_of, l.progress AS latest_progress, l.n_obs,
-    l.value_raw AS latest_value, l.threshold, l.direction,
+    l.value_raw AS latest_value, l.threshold, l.direction, l.policy_dependent,
     s.as_of AS window_start_as_of, s.progress AS window_start_progress,
     (l.progress - s.progress)
       / NULLIF((julianday(l.as_of || '-01') - julianday(s.as_of || '-01')) / 365.25, 0) AS slope
@@ -372,6 +410,11 @@ SELECT
   paired.latest_as_of, paired.latest_progress, paired.n_obs,
   paired.window_start_as_of, paired.window_start_progress, paired.slope,
   CASE
+    -- Checked before the economics-only arms, and deliberately so: for a policy-dependent
+    -- dependency below its bar, "improving" would answer the wrong question. The direction
+    -- of travel is real but it is not what decides revivability — the policy regime is.
+    -- conditional: typology cell pending gap-typology build.
+    WHEN paired.policy_dependent = 1 AND paired.latest_progress < 1 THEN 'conditional'
     WHEN paired.n_obs < 2 OR paired.slope IS NULL THEN 'unknown'
     WHEN paired.slope > (SELECT plateau_slope_threshold FROM trajectory_config LIMIT 1) THEN 'improving'
     WHEN paired.slope < -(SELECT plateau_slope_threshold FROM trajectory_config LIMIT 1) THEN 'receded'

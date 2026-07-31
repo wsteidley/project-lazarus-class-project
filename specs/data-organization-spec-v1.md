@@ -129,8 +129,11 @@ Requirements:
 
 ## Audit / update / extend (the payoff)
 
-- **Audit:** `rm -rf data/derived && npm run build-metric-data && git diff` → empty diff
-  proves the committed derived files reproduce from raw sources.
+- **Audit:** `rm -f data/derived/*.csv && npm run build-metric-data && git diff` → empty
+  diff proves the committed derived files reproduce from raw sources. (The `.csv` glob, not
+  `rm -rf data/derived`: `derived/README.md` is the hand-written "generated — do not edit"
+  banner, not a derived file, so deleting it would land in the diff as a false alarm. The
+  step does recreate the directory if you remove the whole thing.)
 - **Update:** replace a file in `data/sources/<provider>/`, re-run, review the diff.
 - **Add a source:** new `sources/<provider>/` dir + new extractor + manifest row —
   no existing extractor touched.

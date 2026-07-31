@@ -8,10 +8,20 @@ price anchors. Two additions and one caution.
 ---
 
 ## Add 1 — `capacity_series.csv` (unlocks the deferred Wright fit)
+>
+>
+> **Path/count update (data now lives in `data/derived/`).** As of the data-reorg,
+> `capacity_series.csv` and `metric_observations_full.csv` are **generated outputs** in
+> `data/derived/` (produced by `build-metric-data` from `data/sources/` +
+> `data/curated/`), not hand-staged inputs. `capacity_series.csv` is now the full
+> **51-row** series (25 OWID solar AC + 25 IRENA onshore wind + 1 battery anchor), not
+> a 7-row seed. Wire the Wright fit to read `data/derived/capacity_series.csv`.
+
+
 
 v3 deferred Wright's-law projection pending "a cumulative-capacity series per curve
 metric." NEO 2025 supplies it as citeable ETS trajectory points. Delivered as
-`capacity_series.csv` (7 seed rows).
+`capacity_series.csv` (full 51-row series in `data/derived/`; historical, not scenario).
 
 - Feeds Fix 5 (Wright's law): cost falls a fixed % per **doubling of cumulative
   capacity**, so the projection needs the capacity doubling schedule, not just time.
@@ -68,7 +78,7 @@ third straight year**. "Total equity up" and "VC down" are simultaneously true.
 
 ## Build-order impact
 
-- `capacity_series.csv` is a **new input for Fix 5 only** — it doesn't touch the
+- `data/derived/capacity_series.csv` is a **new input for Fix 5 only** — it doesn't touch the
   progress/trajectory views. Wright's law stays last in the build order; it's now
   unblocked rather than reordered.
 - `conditional` state is a **trajectory-classifier change** — lands with the Fix 1

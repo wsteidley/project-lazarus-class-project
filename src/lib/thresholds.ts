@@ -1,8 +1,11 @@
 import type { CsvRow } from './csv.js'
 import { matchCanonical } from './dependency-resolution.js'
 
-// Validation for the curated threshold data (dependencies.csv threshold columns and the
-// new metric_observations.csv). Both follow the project's standing rule: unmatched or
+// Validation for the threshold data (dependencies.csv threshold columns) and for the
+// derived metric series (data/derived/metric_observations_full.csv, capacity_series.csv —
+// the capacity rows reuse this by aliasing `technology` to `dependency_name`, since both
+// resolve against the same canonical dependency list). All follow the standing rule:
+// unmatched or
 // non-conforming rows are *reported*, never silently dropped — a number without provenance
 // silently deciding what looks viable is exactly the failure this data exists to prevent.
 

@@ -38,20 +38,20 @@ export type ProjectionConfig = {
 }
 
 // 'YYYY' or 'YYYY-MM' -> decimal year (month contributes a twelfth each).
-const asOfToYear = (asOf: string): number => {
+export const asOfToYear = (asOf: string): number => {
   const [year, month] = asOf.split('-')
   return Number(year) + (month ? (Number(month) - 1) / 12 : 0)
 }
 
 // Decimal year -> 'YYYY-MM', rounding to the nearest month.
-const yearToAsOf = (year: number): string => {
+export const yearToAsOf = (year: number): string => {
   const whole = Math.floor(year)
   const month = Math.min(12, Math.max(1, Math.round((year - whole) * 12) + 1))
   return `${whole}-${String(month).padStart(2, '0')}`
 }
 
 // Ordinary least squares of y on x, plus R^2. Returns null when x has no spread.
-const linearFit = (
+export const linearFit = (
   pairs: [number, number][],
 ): { slope: number; intercept: number; r2: number } | null => {
   const n = pairs.length

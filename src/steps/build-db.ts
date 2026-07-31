@@ -4,7 +4,7 @@ import { DatabaseSync } from 'node:sqlite'
 import { classifyBaseline } from '../lib/baseline.js'
 import { type CsvRow, readCsv } from '../lib/csv.js'
 import { createTablesSql } from '../lib/db-schema.js'
-import { curatedFile, latestRunDir } from '../lib/paths.js'
+import { curatedFile, derivedFile, latestRunDir } from '../lib/paths.js'
 import { computeProjections, type ProgressPoint } from '../lib/projection.js'
 import { readAllCachedDocuments } from '../lib/raw-documents.js'
 import {
@@ -13,6 +13,7 @@ import {
   validateThresholds,
 } from '../lib/thresholds.js'
 import { trajectoryConfig } from '../lib/trajectory-config.js'
+import { computeWrightProjections, type SeriesPoint, type WrightSeries } from '../lib/wright.js'
 import { SECTOR } from '../schemas.js'
 
 const toText = (value: string | undefined): string | null =>
@@ -59,9 +60,13 @@ const main = async (): Promise<void> => {
   const dependencies = await readCsvIfExists(curatedFile('dependencies.csv'))
   const companyDependencies = await readCsvIfExists(join(runDir, 'company_dependencies.csv'))
   const assessments = await readCsvIfExists(join(runDir, 'dependency_assessments.csv'))
-  // Curated, dated, cited metric facts — a curated input like dependencies.csv, not a run
-  // output. Kept separate from the LLM-generated assessments above.
-  const metricObservations = await readCsvIfExists(curatedFile('metric_observations.csv'))
+  // Dated, cited metric facts, and the cumulative-deployment curves the Wright fit runs
+  // against. Both are *derived* files: build-metric-data regenerates them from the raw
+  // provider files in data/sources plus the hand-entered anchors in data/curated, so every
+  // number here traces to a committed source. Kept separate from the LLM-generated
+  // assessments above.
+  const metricObservations = await readCsvIfExists(derivedFile('metric_observations_full.csv'))
+  const capacitySeries = await readCsvIfExists(derivedFile('capacity_series.csv'))
   // v2 threshold layer: bars keyed (dependency, metric, scope), and causal links between
   // dependencies. Curated inputs.
   const thresholds = await readCsvIfExists(curatedFile('dependency_thresholds.csv'))
@@ -280,8 +285,8 @@ const main = async (): Promise<void> => {
       (dependency_id, metric, scope, threshold_value, threshold_unit, threshold_direction,
        threshold_source_url, threshold_as_of, threshold_note, threshold_contested,
        threshold_alt_value, threshold_alt_source_url, threshold_contested_note,
-       baseline_value, baseline_as_of, baseline_note)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       policy_dependent, baseline_value, baseline_as_of, baseline_note)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   )
   let thresholdsInserted = 0
   for (const row of resolvedThresholds) {
@@ -304,6 +309,7 @@ const main = async (): Promise<void> => {
       toReal(row.threshold_alt_value),
       toText(row.threshold_alt_source_url),
       toText(row.threshold_contested_note),
+      toInt(row.policy_dependent) ?? 0,
       toReal(row.baseline_value),
       toText(row.baseline_as_of),
       toText(row.baseline_note),
@@ -384,8 +390,9 @@ const main = async (): Promise<void> => {
   }
   const insertObservation = db.prepare(
     `INSERT INTO metric_observations
-      (dependency_id, metric, value, unit, as_of, scope, method, source_url, source_name, note)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      (dependency_id, metric, value, unit, basis, as_of, scope, method, source_url,
+       source_name, note)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   )
   let observationsInserted = 0
   for (const row of resolvedObservations) {
@@ -399,6 +406,7 @@ const main = async (): Promise<void> => {
       toText(row.metric),
       toReal(row.value),
       toText(row.unit),
+      toText(row.basis),
       toText(row.as_of),
       toText(row.scope),
       toText(row.method),
@@ -407,6 +415,53 @@ const main = async (): Promise<void> => {
       toText(row.note),
     )
     observationsInserted += 1
+  }
+
+  // capacity_series: cumulative deployment per technology, the x-axis of the Wright fit.
+  // `technology` names a canonical dependency, so it resolves through the same map and the
+  // same report-not-drop validator — validateObservationRows keys on `dependency_name`, so
+  // the column is aliased rather than the validator duplicated.
+  const capacityRows = capacitySeries.map((row) => ({
+    ...row,
+    dependency_name: row.technology ?? '',
+  }))
+  const { resolved: resolvedCapacity, unmatched: unmatchedCapacity } = validateObservationRows(
+    capacityRows,
+    [...dependencyIdByName.keys()],
+  )
+  for (const row of unmatchedCapacity) {
+    console.warn(
+      `  capacity_series technology matched nothing canonical: "${row.technology ?? ''}"`,
+    )
+  }
+  const insertCapacity = db.prepare(
+    `INSERT INTO capacity_series
+      (dependency_id, metric, value, unit, basis, as_of, scope, scenario, method, source_url,
+       source_name, note)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  )
+  let capacityInserted = 0
+  for (const row of resolvedCapacity) {
+    const dependencyId = dependencyIdByName.get(row.dependency_name)
+    if (dependencyId === undefined) {
+      skipped += 1
+      continue
+    }
+    insertCapacity.run(
+      dependencyId,
+      toText(row.metric),
+      toReal(row.value),
+      toText(row.unit),
+      toText(row.basis),
+      toText(row.as_of),
+      toText(row.scope),
+      toText(row.scenario),
+      toText(row.method),
+      toText(row.source_url),
+      toText(row.source_name),
+      toText(row.note),
+    )
+    capacityInserted += 1
   }
 
   // dependency_links: causal edges between dependencies. Both endpoints must resolve.
@@ -478,10 +533,79 @@ const main = async (): Promise<void> => {
 
   // metric_projections: the one derived layer that is real computation, not a view. Read the
   // progress view back, fit each not-yet-crossed series, and store the projected points.
-  const progressRows = db
-    .prepare('SELECT dependency_id, metric, scope, as_of, progress FROM progress')
-    .all() as ProgressPoint[]
-  const projections = computeProjections(progressRows, { windowN: trajectoryConfig.windowN })
+  //
+  // Two models, and which one ran is recorded per row. Wright (cost vs cumulative capacity)
+  // is the physically-motivated fit and wins wherever it can run; the linear-in-time fit
+  // covers everything else. Today that means Wright fits solar and linear fits the rest —
+  // wind LCOE has 2 cost points and battery has 1 capacity point, so neither can support a
+  // learning curve yet. The fallback is the common path, not the exception.
+  const wrightInput = db
+    .prepare(
+      `SELECT p.dependency_id, p.metric, p.scope, p.direction, p.baseline, p.threshold,
+              p.as_of, p.value_raw
+       FROM progress p
+       WHERE p.dependency_id IN (SELECT DISTINCT dependency_id FROM capacity_series)`,
+    )
+    .all() as {
+    dependency_id: number
+    metric: string
+    scope: string
+    direction: string
+    baseline: number
+    threshold: number
+    as_of: string
+    value_raw: number
+  }[]
+  const capacityByDependency = new Map<number, SeriesPoint[]>()
+  for (const row of db
+    .prepare(
+      // Historical only: a scenario row is a forecast, and fitting a forecast would launder
+      // an assumption into evidence.
+      `SELECT dependency_id, as_of, value FROM capacity_series
+       WHERE scenario = 'historical' AND value IS NOT NULL`,
+    )
+    .all() as { dependency_id: number; as_of: string; value: number }[]) {
+    const list = capacityByDependency.get(row.dependency_id) ?? []
+    list.push({ as_of: row.as_of, value: row.value })
+    capacityByDependency.set(row.dependency_id, list)
+  }
+  const wrightSeries = new Map<string, WrightSeries>()
+  for (const row of wrightInput) {
+    const key = `${row.dependency_id}::${row.metric}::${row.scope}`
+    const existing = wrightSeries.get(key)
+    if (existing) {
+      existing.costPoints.push({ as_of: row.as_of, value: row.value_raw })
+      continue
+    }
+    wrightSeries.set(key, {
+      dependency_id: row.dependency_id,
+      metric: row.metric,
+      scope: row.scope,
+      direction: row.direction,
+      baseline: row.baseline,
+      threshold: row.threshold,
+      costPoints: [{ as_of: row.as_of, value: row.value_raw }],
+      capacityPoints: capacityByDependency.get(row.dependency_id) ?? [],
+    })
+  }
+  const wright = computeWrightProjections([...wrightSeries.values()])
+  for (const entry of wright.skipped) {
+    console.warn(`  wright fit skipped for "${entry.metric}": ${entry.reason} — using linear fit`)
+  }
+  // Series Wright already covered are excluded from the linear pass, so a series never
+  // carries two competing projections.
+  const wrightCovered = new Set(
+    wright.rows.map((row) => `${row.dependency_id}::${row.metric}::${row.scope}`),
+  )
+  const progressRows = (
+    db
+      .prepare('SELECT dependency_id, metric, scope, as_of, progress FROM progress')
+      .all() as ProgressPoint[]
+  ).filter((row) => !wrightCovered.has(`${row.dependency_id}::${row.metric}::${row.scope}`))
+  const projections = [
+    ...wright.rows,
+    ...computeProjections(progressRows, { windowN: trajectoryConfig.windowN }),
+  ]
   const insertProjection = db.prepare(
     `INSERT INTO metric_projections
       (dependency_id, metric, scope, as_of, progress, projected, method, fit_window_n,
@@ -528,7 +652,9 @@ const main = async (): Promise<void> => {
       `${dependencies.length} dependencies, ${thresholdsInserted} dependency_thresholds, ` +
       `${companyDependencies.length} company_dependencies, ` +
       `${assessments.length} dependency_assessments, ${observationsInserted} metric_observations, ` +
-      `${linksInserted} dependency_links, ${projections.length} metric_projections, ` +
+      `${capacityInserted} capacity_series, ` +
+      `${linksInserted} dependency_links, ${projections.length} metric_projections ` +
+      `(${wright.rows.length} wright, ${projections.length - wright.rows.length} linear), ` +
       `${rawDocuments.length} raw_documents` +
       (baselineEquals || baselinePast
         ? ` (${baselineEquals} baseline==threshold, ${baselinePast} baseline-past-threshold — progress null)`
