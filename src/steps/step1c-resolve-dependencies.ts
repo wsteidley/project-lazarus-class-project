@@ -62,6 +62,10 @@ const resolveDependency = (
     return {
       company_uuid: dependency.company_uuid ?? '',
       dependency_name: matchCanonical(proposed, canonicalNames) ?? '',
+      // The model's own answer, kept whether or not it matched. When it didn't, this is the
+      // only name the blocker has, and build-db now retains the row on the strength of it.
+      // Falls back to the extracted detail so an unresolved row is never anonymous.
+      dependency_name_raw: proposed ?? dependency.detail ?? '',
       criticality: dependency.criticality ?? 'contributing',
       detail: dependency.detail ?? '',
       source_url: dependency.source_url ?? '',

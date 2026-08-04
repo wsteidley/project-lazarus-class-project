@@ -149,6 +149,63 @@ describe('createTablesSql', () => {
     db.close()
   })
 
+  // A blocker the resolver could not fold onto the canonical list is retained with a null
+  // dependency_id (P2), so the schema has to make the two states impossible to confuse.
+  it('accepts an unresolved company_dependency and rejects an inconsistent one', () => {
+    const db = freshDb()
+    const companyId = Number(
+      db.prepare('INSERT INTO companies (company_name) VALUES (?)').run('Co').lastInsertRowid,
+    )
+    const depId = Number(
+      db.prepare('INSERT INTO dependencies (name) VALUES (?)').run('Solar module cost')
+        .lastInsertRowid,
+    )
+    const insert = db.prepare(
+      `INSERT INTO company_dependencies
+        (company_id, dependency_id, dependency_name_raw, resolution_status, criticality)
+       VALUES (?, ?, ?, ?, ?)`,
+    )
+
+    expect(() =>
+      insert.run(companyId, null, 'public trust in AVs', 'unresolved_name', 'was_blocking'),
+    ).not.toThrow()
+    expect(() =>
+      insert.run(companyId, depId, 'cheap PV modules', 'resolved', 'contributing'),
+    ).not.toThrow()
+
+    // The status and the id cannot disagree in either direction.
+    expect(() => insert.run(companyId, null, 'x', 'resolved', 'contributing')).toThrow()
+    expect(() => insert.run(companyId, depId, 'y', 'unresolved_name', 'contributing')).toThrow()
+    // And the status vocab itself is closed.
+    expect(() => insert.run(companyId, null, 'z', 'maybe', 'contributing')).toThrow()
+
+    db.close()
+  })
+
+  // SQLite treats NULLs in a UNIQUE index as distinct from each other, so a plain
+  // UNIQUE(company_id, dependency_id, dependency_name_raw) would let identical unresolved
+  // rows both insert and would quietly stop INSERT OR IGNORE deduplicating them.
+  it('deduplicates identical unresolved company_dependencies despite the null id', () => {
+    const db = freshDb()
+    const companyId = Number(
+      db.prepare('INSERT INTO companies (company_name) VALUES (?)').run('Co').lastInsertRowid,
+    )
+    const insert = db.prepare(
+      `INSERT OR IGNORE INTO company_dependencies
+        (company_id, dependency_id, dependency_name_raw, resolution_status)
+       VALUES (?, ?, ?, ?)`,
+    )
+    insert.run(companyId, null, 'public trust in AVs', 'unresolved_name')
+    insert.run(companyId, null, 'public trust in AVs', 'unresolved_name')
+    insert.run(companyId, null, 'municipal permitting', 'unresolved_name')
+
+    const { n } = db.prepare('SELECT COUNT(*) AS n FROM company_dependencies').get() as {
+      n: number
+    }
+    expect(n).toBe(2)
+    db.close()
+  })
+
   it('appends metric_observations under a dependency FK with a method CHECK', () => {
     const db = freshDb()
     const depId = Number(

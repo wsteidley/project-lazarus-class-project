@@ -10,6 +10,7 @@ const canonical = ['Lithium-ion battery cost', 'Solar module cost', 'Carbon pric
 const row = (overrides: Partial<CompanyDependencyRow> = {}): CompanyDependencyRow => ({
   company_uuid: 'company-1',
   dependency_name: 'Lithium-ion battery cost',
+  dependency_name_raw: 'battery pack price',
   criticality: 'contributing',
   detail: 'needed cheap cells',
   source_url: 'https://example.com/a',
@@ -61,13 +62,29 @@ describe('dedupeCompanyDependencies', () => {
     expect(merged).toHaveLength(2)
   })
 
-  it('keeps every unresolved row instead of collapsing them together', () => {
+  it('keeps unresolved rows naming different blockers separate', () => {
     const merged = dedupeCompanyDependencies([
-      row({ dependency_name: '', detail: 'something odd' }),
-      row({ dependency_name: '', detail: 'something else odd' }),
+      row({ dependency_name: '', dependency_name_raw: 'public trust in AVs' }),
+      row({ dependency_name: '', dependency_name_raw: 'municipal permitting appetite' }),
     ])
     expect(merged).toHaveLength(2)
     expect(merged.every((entry) => entry.dependency_name === '')).toBe(true)
+  })
+
+  // Unresolved rows used to pass straight through un-merged, because they had no canonical
+  // identity. Now that build-db retains them instead of dropping them, two extractions of
+  // the same unmatched blocker are the same blocker — and would otherwise duplicate.
+  it('merges unresolved rows naming the same blocker, tolerating case drift', () => {
+    const merged = dedupeCompanyDependencies([
+      row({ dependency_name: '', dependency_name_raw: 'public trust in AVs', detail: 'riders' }),
+      row({
+        dependency_name: '',
+        dependency_name_raw: 'Public Trust in AVs',
+        detail: 'regulators',
+      }),
+    ])
+    expect(merged).toHaveLength(1)
+    expect(merged[0]?.detail).toBe('riders; regulators')
   })
 
   it('does not drop duplicate details', () => {

@@ -106,6 +106,13 @@ export const DEPENDENCY = [
 
 export const CRITICALITY = ['was_blocking', 'contributing'] as const
 
+// Whether a company's blocker folded onto the canonical dependency list. `unresolved_name`
+// is not missing data — it is a company whose blocker we HAVE, named in the extractor's own
+// words, that nothing canonical yet covers. Dropping those rows (the pre-P2 behaviour)
+// deleted exactly the qualitative and novel blockers the dataset exists to surface: the
+// company survived, its reason for dying did not.
+export const RESOLUTION_STATUS = ['resolved', 'unresolved_name'] as const
+
 // Evidence strength for any judged row. Four levels because that's the resolution an
 // LLM can produce reliably — a finer hand-scale would be false precision. Orthogonal
 // to `contested` (which records that sources disagree): high-and-contested is real.

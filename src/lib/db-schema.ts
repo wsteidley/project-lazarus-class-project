@@ -12,6 +12,7 @@ import {
   OUTCOME_TYPE,
   PROJECTION_METHOD,
   REGION,
+  RESOLUTION_STATUS,
   ROUND,
   THRESHOLD_DIRECTION,
   THRESHOLD_KIND,
@@ -248,14 +249,33 @@ CREATE TABLE wright_fits (
   PRIMARY KEY (dependency_id, metric, scope, segment)
 );
 
+-- A company's blockers. dependency_id is NULLABLE and that is the point (P2): a blocker the
+-- resolver could not fold onto the canonical list is RETAINED here, named in the extractor's
+-- own words, rather than dropped. step1c deliberately emits those rows so they can be curated;
+-- the loader used to discard them into an anonymous skip counter, so the company survived and
+-- its reason for dying did not. resolution_status makes the two cases queryable apart, which
+-- is P3: "no canonical match" and "no blocker recorded" must never be the same blank.
 CREATE TABLE company_dependencies (
-  company_id    INTEGER NOT NULL REFERENCES companies(id),
-  dependency_id INTEGER NOT NULL REFERENCES dependencies(id),
-  criticality   TEXT ${checkIn('criticality', CRITICALITY, false)},
-  detail        TEXT,
-  source_url    TEXT,
-  PRIMARY KEY (company_id, dependency_id)
+  id                  INTEGER PRIMARY KEY,
+  company_id          INTEGER NOT NULL REFERENCES companies(id),
+  dependency_id       INTEGER REFERENCES dependencies(id),
+  -- What the extractor actually said. Always populated: for a resolved row it is the
+  -- pre-canonicalisation spelling, which is what makes a bad match auditable after the fact.
+  dependency_name_raw TEXT NOT NULL DEFAULT '',
+  resolution_status   TEXT NOT NULL DEFAULT 'resolved'
+    ${checkIn('resolution_status', RESOLUTION_STATUS, false)},
+  criticality         TEXT ${checkIn('criticality', CRITICALITY, false)},
+  detail              TEXT,
+  source_url          TEXT,
+  -- The two columns cannot disagree: a resolved row has an id, an unresolved one does not.
+  CHECK ((resolution_status = 'resolved') = (dependency_id IS NOT NULL))
 );
+
+-- COALESCE, not a plain UNIQUE(company_id, dependency_id, dependency_name_raw): SQLite treats
+-- NULLs in a UNIQUE index as distinct from each other, so two identical unresolved rows would
+-- both insert and INSERT OR IGNORE would quietly stop deduplicating.
+CREATE UNIQUE INDEX company_dependencies_key
+  ON company_dependencies (company_id, COALESCE(dependency_id, -1), dependency_name_raw);
 
 -- The "now" axis: one row per (dependency x assessed_on), each carrying its own
 -- evidence (source_url + snippet + confidence) so an automated verdict is auditable
