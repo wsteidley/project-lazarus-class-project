@@ -1,5 +1,9 @@
 # Project Lazarus — Metric Data Structure Spec (v1)
 
+**Governed by `../foundational-principles.md`.** This schema must satisfy P2 (metric
+coverage never gates inclusion), P3 (each absence is a labeled state, never a bare null),
+and P4 (a viability call always carries its basis) — check changes here against those.
+
 Restructures metric data into a **star schema** with enforced valid-value lookups, and
 adds a `segment` dimension so slices (on/off-grid, on/offshore) are filterable or
 rolled-up. Supersedes the flat `metric_observations` shape.

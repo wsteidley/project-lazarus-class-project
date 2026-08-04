@@ -1,5 +1,9 @@
 # Project Lazarus — Open Questions Tracker
 
+**Governed by `foundational-principles.md`** — check every ruling against it. A
+resolution that narrows what's included, hides an absence, or hands down an untagged
+verdict is likely violating a principle.
+
 Single home for cross-spec open questions, so they stop living scattered across 20+
 spec files. Two sections: **recently resolved** (with the ruling, so they're not
 re-litigated) and **still open** (filtered to what's actually live — stale/superseded
@@ -145,6 +149,19 @@ window, and (via derivation) curve classification below.
   `receded` series) are held pending the technology/dependency split, so
   **interconnection is currently the only loaded `receded` series** — the check is
   weaker until the split lands, and may be worth reordering after it.*
+
+### Principle audits (from `foundational-principles.md`) — investigate, don't fix yet
+- **Inclusion gate is the company/outcome pipeline, and the bar is LOW** (P2). A company
+  enters on factual footprint alone: what it did, roughly when, sector/approach, and
+  dependencies where known. **Audit:** verify nothing in the load path drops a company for
+  *lack of* metric, threshold, or viability data. Any such drop is a P2 violation to fix.
+  The failure mode is curve-rich technologies quietly narrowing a *company* dataset into a
+  *technologies-we-have-curves-for* dataset.
+- **Absence must be distinct queryable states, not nulls** (P3). "No curve data," "no
+  threshold," "undetermined," "assessed → not viable," and "assessed → viable" are **five
+  different states**. **Audit:** can the current schema distinguish all five, or does it
+  collapse any into a bare null? Extends the existing `metric_series_status` / coverage /
+  `unsampled`-≠-`white_space` discipline to the whole dataset.
 
 ### Gated on measurement (don't decide yet)
 - **`FUZZY_MERGE_THRESHOLD`** + whether a mid-band queues for review — needs the

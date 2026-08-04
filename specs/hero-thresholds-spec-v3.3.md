@@ -1,5 +1,9 @@
 # Project Lazarus — Thresholds & Progress Spec (v3.3)
 
+**Governed by `../foundational-principles.md`.** Everything this spec produces —
+viability, crossing dates, progress — is a **tagged, inspectable overlay** (P1/P4). It
+never gates a company's or a dependency's inclusion in the dataset.
+
 **Build-state-of-record**, not new design. v3.2 was implemented; two runs and the
 extended IRENA extraction since then changed enough that v3.2 no longer describes
 reality. This reconciles it into one current narrative.

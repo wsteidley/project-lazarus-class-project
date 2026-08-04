@@ -1,5 +1,9 @@
 # Project Lazarus — Technology / Dependency Split Spec (v1)
 
+**Governed by `../foundational-principles.md`** — and this split is what *implements* P2:
+a dependency can exist description-only, with no curve, so a company blocked on a
+non-measurable thing ("public trust in AVs") still gets in, with its blocker named.
+
 Corrects an entity conflation the loader exposed: metric data is keyed on
 **technology**, but the loader resolves through `dependencies.name`, so any technology
 without a dependency row (CSP, hydro, geothermal, bioenergy, offshore wind) drops all

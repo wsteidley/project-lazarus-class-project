@@ -1,5 +1,9 @@
 # Project Lazarus — Metric Data Baseline Spec (LIVING DOCUMENT)
 
+**Governed by `../foundational-principles.md`.** This doc owns *how* data is measured and
+compared; the principles own *why* the dataset stays inclusive regardless. A basis or
+methodology rule is never a reason to drop a company or a dependency.
+
 **Status: living.** Update this whenever a new metric series is sourced or a new
 methodology gotcha is found. It is the standing reference that informs every future
 spec and every model/agent touching cost, capacity, or threshold data. If a data
