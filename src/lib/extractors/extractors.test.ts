@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest'
 import type { CsvRow } from '../csv.js'
 import { extractCapacityAnchors, extractCitedAnchors } from './cited-anchors.js'
 import { extractIrenaCapacity } from './irena-capacity.js'
+import { extractIrenaRpgc } from './irena-rpgc.js'
+import { extractIrenaTic } from './irena-tic.js'
 import { readOwidWorldSeries } from './owid.js'
 import { extractOwidSolarCapacity } from './owid-solar-capacity.js'
 import { extractOwidSolarCost } from './owid-solar-cost.js'
@@ -176,10 +178,11 @@ describe('extractIrenaCapacity', () => {
 describe('cited anchors', () => {
   const anchor = (overrides: Partial<CsvRow> = {}): CsvRow => ({
     dependency_name: 'Lithium-ion battery cost',
-    metric: 'battery pack price (all-segment)',
+    metric: 'battery pack price',
     value: '108',
     unit: 'USD/kWh',
     basis: 'real_usd',
+    segment: 'all',
     as_of: '2025-12',
     scope: 'global',
     method: 'curated',
@@ -264,5 +267,153 @@ describe('deterministic ordering', () => {
       // biome-ignore lint/suspicious/noExplicitAny: partial rows are enough to test ordering
     ] as any)
     expect(rows.map((row) => row.technology)).toEqual(['Onshore', 'Solar'])
+  })
+})
+
+const irenaRow = (overrides: Partial<CsvRow>): CsvRow => ({
+  technology: 'Onshore wind',
+  metric: 'LCOE',
+  value: '32.95',
+  unit: 'USD/MWh',
+  basis: 'real_2025_usd',
+  segment: 'onshore',
+  as_of: '2025-12',
+  scope: 'global',
+  method: 'curated',
+  source_url: 'https://www.irena.org/x',
+  source_name: 'IRENA RPGC 2025',
+  note: '',
+  ...overrides,
+})
+
+describe('extractIrenaRpgc', () => {
+  it('aliases a technology onto the dependency the loader resolves through', () => {
+    const { observations } = extractIrenaRpgc([irenaRow({})])
+    expect(observations.rows[0]).toMatchObject({
+      dependency_name: 'Onshore wind LCOE',
+      metric: 'LCOE',
+      segment: 'onshore',
+      value: '32.95',
+    })
+  })
+
+  // The five orphan technologies. They are valid data with no dependency to hang off yet, and
+  // metric_observations.dependency_id is NOT NULL — so they must be held and NAMED, never
+  // dropped quietly and never forced in by inventing a dependency.
+  it('holds a technology with no dependency, counted by subject rather than dropped', () => {
+    const { observations, held } = extractIrenaRpgc([
+      irenaRow({ technology: 'Geothermal', segment: 'all' }),
+      irenaRow({ technology: 'Geothermal', segment: 'all', as_of: '2024-12' }),
+      irenaRow({ technology: 'Hydropower', segment: 'all' }),
+    ])
+    expect(observations.rows).toEqual([])
+    expect(observations.excluded).toBe(3)
+    expect(held.get('Geothermal / LCOE')).toBe(2)
+    expect(held.get('Hydropower / LCOE')).toBe(1)
+  })
+
+  // 'Global' and 'global' would otherwise become two series, and the one that no threshold
+  // joins would silently produce nothing at all.
+  it('folds scope casing and country names onto one vocabulary', () => {
+    const rows = [
+      irenaRow({ scope: 'Global' }),
+      irenaRow({ scope: 'United States' }),
+      irenaRow({ scope: 'Germany' }),
+    ]
+    const { observations } = extractIrenaRpgc(rows)
+    expect(observations.rows.map((row) => row.scope)).toEqual(['global', 'US', 'DE'])
+  })
+
+  it('reports an unrecognised scope instead of passing it through', () => {
+    const { observations } = extractIrenaRpgc([irenaRow({ scope: 'Atlantis' })])
+    expect(observations.rows).toEqual([])
+    expect(observations.unparsed[0]?.reason).toContain('unrecognised scope')
+  })
+
+  it('cumulates BESS additions into a capacity series and never stores the raw flow', () => {
+    const additions = ['2.02', '2.24', '2.99'].map((value, index) =>
+      irenaRow({
+        technology: 'Lithium-ion battery cost',
+        metric: 'bess_additions',
+        value,
+        unit: 'GWh',
+        basis: 'na',
+        segment: 'all',
+        as_of: `${2015 + index}-12`,
+      }),
+    )
+    const { observations, capacity } = extractIrenaRpgc(additions)
+    // An annual flow is not an observation of a level — storing it as one would put a 2.99 point
+    // on an axis whose real value that year is 7.25.
+    expect(observations.rows).toEqual([])
+    expect(capacity.rows.map((row) => [row.as_of, row.value])).toEqual([
+      ['2015-12', '2.02'],
+      ['2016-12', '4.26'],
+      ['2017-12', '7.25'],
+    ])
+    expect(capacity.rows[0]?.technology).toBe('Utility-scale battery system')
+    // The truncation biases the learning rate, so it has to travel with the data.
+    expect(capacity.rows[0]?.note).toContain('EXCLUDED')
+  })
+
+  it('stamps the battery series with what IRENA actually measured', () => {
+    const { observations } = extractIrenaRpgc([
+      irenaRow({
+        technology: 'Lithium-ion battery cost',
+        metric: 'battery_installed_cost',
+        value: '140.45',
+        unit: 'USD/kWh',
+        segment: 'all',
+      }),
+    ])
+    // Four battery cost definitions span $70-140/kWh for the same year; an unlabelled row is
+    // how they get spliced into one curve.
+    expect(observations.rows[0]?.note).toContain('usable kWh')
+    expect(observations.rows[0]?.note).toContain('blended duration')
+  })
+
+  it('rejects a row with no citation', () => {
+    const { observations } = extractIrenaRpgc([irenaRow({ source_url: '' })])
+    expect(observations.rows).toEqual([])
+    expect(observations.unparsed[0]?.reason).toContain('without source_url')
+  })
+})
+
+describe('extractIrenaTic', () => {
+  const scratch = (year: string, cost: string): CsvRow => ({ year, cost_usd_per_kw: cost })
+
+  it('stamps the wind installed-cost series with its own basis and segment', () => {
+    const { rows } = extractIrenaTic([scratch('2010', '2380.8642270915807')])
+    expect(rows[0]).toMatchObject({
+      dependency_name: 'Onshore wind LCOE',
+      metric: 'total_installed_cost',
+      unit: 'USD/kW',
+      basis: 'real_2025_usd',
+      segment: 'onshore',
+      as_of: '2010-12',
+      // Two decimals: the audit diff must not carry float noise.
+      value: '2380.86',
+    })
+  })
+
+  it('sorts by year regardless of input order', () => {
+    const { rows } = extractIrenaTic([
+      scratch('2025', '976.01'),
+      scratch('2010', '2380.86'),
+      scratch('2018', '1910.28'),
+    ])
+    expect(rows.map((row) => row.as_of)).toEqual(['2010-12', '2018-12', '2025-12'])
+  })
+
+  it('reports an unusable row rather than dropping it', () => {
+    const { rows, unparsed } = extractIrenaTic([scratch('2010', 'n/a'), scratch('2011', '2333.88')])
+    expect(rows).toHaveLength(1)
+    expect(unparsed[0]?.reason).toContain('unparseable cost_usd_per_kw')
+  })
+
+  // An empty parse means the workbook layout moved. Returning zero rows would delete the
+  // series from the derived file and read as a legitimate diff.
+  it('throws when nothing parsed at all', () => {
+    expect(() => extractIrenaTic([])).toThrow(/layout changed/)
   })
 })

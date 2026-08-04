@@ -20,16 +20,24 @@ import { asOfToYear, linearFit, type ProjectionRow, yearToAsOf } from './project
 // A dated scalar — a cost observation or a cumulative-capacity point.
 export type SeriesPoint = { as_of: string; value: number }
 
-// Everything the fit needs for one (dependency, metric, scope) series. `baseline` and
-// `threshold` come from the same place the progress view gets them, so Wright's output
-// lands on the identical 0->1 axis as the linear projection's.
+// Everything the fit needs for one (dependency, metric, segment, scope) series. When present,
+// `baseline` and `threshold` follow the same rule the progress view uses, so a Wright
+// projection lands on the identical 0->1 axis as a linear one.
+//
+// `direction`, `baseline` and `threshold` are NULLABLE, and that is the point: they come from
+// a curated bar, and a learning rate does not need one. The log-log slope is a property of
+// cost against cumulative capacity alone; the bar only enters when converting that slope into
+// a crossing DATE and onto the 0->1 progress axis. Wind's total_installed_cost is the case
+// that forced this — it is the Wright-fittable wind series and it has no viability bar, so
+// requiring one would have meant either inventing a threshold or silently getting no fit.
 export type WrightSeries = {
   dependency_id: number
   metric: string
   scope: string
-  direction: string
-  baseline: number
-  threshold: number
+  segment: string
+  direction: string | null
+  baseline: number | null
+  threshold: number | null
   costPoints: SeriesPoint[]
   capacityPoints: SeriesPoint[]
 }
@@ -48,13 +56,49 @@ export type WrightSkip = {
   dependency_id: number
   metric: string
   scope: string
+  segment: string
   reason: string
 }
 
-export type WrightResult = { rows: ProjectionRow[]; skipped: WrightSkip[] }
+// A learning-rate fit that succeeded, kept SEPARATELY from the projection rows because the two
+// are not the same finding. A series can have an excellent, well-evidenced learning curve and
+// still yield no projection -- that is exactly what happens once a series is already past its
+// bar (onshore wind crossed in 2019, battery in 2025). Returning only projections would throw
+// away the learning rate for every technology that has already succeeded, which is most of the
+// interesting ones.
+export type WrightFit = {
+  dependency_id: number
+  metric: string
+  scope: string
+  segment: string
+  learning_rate: number
+  b: number
+  r2: number
+  n_pairs: number
+  first_as_of: string
+  last_as_of: string
+}
+
+export type WrightResult = { rows: ProjectionRow[]; skipped: WrightSkip[]; fits: WrightFit[] }
 
 const DEFAULT_MIN_PAIRS = 4
 const DEFAULT_MAX_HORIZON = 30
+
+// Metrics that measure DELIVERED-ENERGY cost rather than hardware cost. Wright's law is a
+// manufacturing-learning model: cost per unit built falls with cumulative units built. LCOE is
+// not that quantity -- it also moves with capacity factor, financing terms and siting, none of
+// which are learning-by-doing. Fitting it against cumulative GW credits taller turbines and
+// cheaper debt to the factory floor.
+//
+// This is not a theoretical worry. Onshore wind LCOE fits at 43%/doubling against real IRENA
+// data -- roughly double any published onshore-wind learning rate -- precisely because a large
+// share of that LCOE fall came from capacity-factor gains rather than cheaper turbines. The
+// structure spec already draws this line ("Wright uses module_price; thresholds/viability use
+// LCOE"); this enforces it instead of trusting each caller to remember.
+//
+// The fix is not to relax the gate: it is to load a hardware series (IRENA publishes
+// total_installed_cost in USD/kW per technology) and fit that.
+export const DELIVERED_ENERGY_METRICS = new Set(['LCOE', 'lcoe_by_market'])
 
 // Learning rate from the log-log slope: a doubling multiplies cost by 2^(-b), so the
 // fractional drop per doubling is 1 - 2^(-b). Reported in the note because it is the number
@@ -90,12 +134,14 @@ export const computeWrightProjections = (
   const minPairs = config.minPairs ?? DEFAULT_MIN_PAIRS
   const rows: ProjectionRow[] = []
   const skipped: WrightSkip[] = []
+  const fits: WrightFit[] = []
 
   for (const entry of series) {
     const key = {
       dependency_id: entry.dependency_id,
       metric: entry.metric,
       scope: entry.scope,
+      segment: entry.segment,
     }
     const skip = (reason: string): void => {
       skipped.push({ ...key, reason })
@@ -103,12 +149,21 @@ export const computeWrightProjections = (
 
     // A learning curve is a falling-cost model. An above_is_better metric (carbon price)
     // isn't one, and fitting it would produce confident nonsense.
-    if (entry.direction !== 'below_is_better') {
+    //
+    // Only checked when a direction was declared. A series with no bar has none — and that is
+    // a real, if acceptable, weakening: such a series can no longer be refused BEFORE fitting
+    // on the strength of a curated direction. The backstop is the negative-slope guard below,
+    // which a rising series cannot pass, so a receding curve still cannot produce a learning
+    // rate; it just gets rejected by its own data rather than by its label.
+    if (entry.direction !== null && entry.direction !== 'below_is_better') {
       skip('not a cost curve (direction is not below_is_better)')
       continue
     }
-    if (entry.threshold <= 0) {
-      skip('threshold is not positive — log-space fit undefined')
+    if (DELIVERED_ENERGY_METRICS.has(entry.metric)) {
+      skip(
+        `${entry.metric} is a delivered-energy cost, not a hardware cost — Wright needs a ` +
+          'manufacturing series (module price / total installed cost)',
+      )
       continue
     }
 
@@ -126,6 +181,35 @@ export const computeWrightProjections = (
     }
     const b = -costFit.slope
     const lnA = costFit.intercept
+
+    // Recorded HERE, before the forward-path and crossing guards, because the learning rate is
+    // already established at this point and does not depend on any of them. Recording it later
+    // would silently discard the fit for every already-crossed series -- i.e. for the
+    // technologies that actually won.
+    const costAsOf = entry.costPoints.map((point) => point.as_of).sort()
+    fits.push({
+      ...key,
+      learning_rate: learningRate(b),
+      b,
+      r2: costFit.r2,
+      n_pairs: pairs.length,
+      first_as_of: costAsOf[0] as string,
+      last_as_of: costAsOf[costAsOf.length - 1] as string,
+    })
+
+    // Everything from here on produces the PROJECTION, which is where the bar finally
+    // matters: a crossing date is "when does this curve reach T", and the 0->1 axis is
+    // measured between B and T. No bar means no crossing to compute — the fit above still
+    // stands and has already been recorded.
+    const { baseline, threshold } = entry
+    if (threshold === null || baseline === null) {
+      skip('no threshold declared — fit only, no crossing to project')
+      continue
+    }
+    if (threshold <= 0) {
+      skip('threshold is not positive — log-space crossing undefined')
+      continue
+    }
 
     // Fit 2: the forward capacity path. ln(capacity) = c + d*t.
     //
@@ -149,7 +233,7 @@ export const computeWrightProjections = (
     const { slope: d, intercept: c } = capacityFit
 
     // Crossing: ln(threshold) = lnA - b*(c + d*t)  =>  t = (lnA - ln(T) - b*c) / (b*d).
-    const crossingYear = (lnA - Math.log(entry.threshold) - b * c) / (b * d)
+    const crossingYear = (lnA - Math.log(threshold) - b * c) / (b * d)
     const latestYear = Math.max(...entry.costPoints.map((point) => asOfToYear(point.as_of)))
     if (!Number.isFinite(crossingYear) || crossingYear <= latestYear) {
       skip('fitted curve is already past the bar or yields no future crossing')
@@ -165,14 +249,14 @@ export const computeWrightProjections = (
     // Cost at time t, then onto the same 0->1 progress axis the progress view defines, so a
     // wright row and a linear row mean the same thing on a chart.
     const costAt = (year: number): number => Math.exp(lnA - b * (c + d * year))
-    const progressAt = (year: number): number =>
-      (entry.baseline - costAt(year)) / (entry.baseline - entry.threshold)
+    const progressAt = (year: number): number => (baseline - costAt(year)) / (baseline - threshold)
 
     const rate = learningRate(b)
     const base = {
       dependency_id: entry.dependency_id,
       metric: entry.metric,
       scope: entry.scope,
+      segment: entry.segment,
       method: 'wright' as (typeof PROJECTION_METHOD)[number],
       fit_window_n: pairs.length,
       confidence: costFit.r2,
@@ -198,5 +282,5 @@ export const computeWrightProjections = (
     })
   }
 
-  return { rows, skipped }
+  return { rows, skipped, fits }
 }

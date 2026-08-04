@@ -27,6 +27,7 @@ const syntheticSeries = (options: {
     dependency_id: 1,
     metric: 'module price',
     scope: 'global',
+    segment: 'all',
     direction: 'below_is_better',
     baseline: options.baseline ?? options.startCost,
     threshold: options.threshold,
@@ -176,5 +177,69 @@ describe('computeWrightProjections guards (these are today’s real data, not hy
     const thin: WrightSeries = { ...base, costPoints: base.costPoints.slice(0, 2) }
     const { skipped } = computeWrightProjections([thin])
     expect(skipped[0]).toMatchObject({ dependency_id: 1, metric: 'module price', scope: 'global' })
+  })
+
+  // The case onshore wind and battery actually hit: a real, well-evidenced learning curve on a
+  // series that has already crossed its bar. There is nothing to forecast, but the learning rate
+  // is the finding — returning only projections would silently discard it for every technology
+  // that already succeeded.
+  it('still reports the fit for an already-crossed series that yields no projection', () => {
+    const { rows, fits } = computeWrightProjections([{ ...base, threshold: 1e9 }])
+    expect(rows).toEqual([])
+    expect(fits).toHaveLength(1)
+    expect(fits[0]?.learning_rate).toBeCloseTo(0.2, 6)
+    expect(fits[0]?.r2).toBeCloseTo(1, 6)
+    expect(fits[0]?.first_as_of).toBe('2000-12')
+  })
+
+  it('reports no fit when the learning-rate regression itself could not run', () => {
+    const thin: WrightSeries = { ...base, costPoints: base.costPoints.slice(0, 2) }
+    expect(computeWrightProjections([thin]).fits).toEqual([])
+  })
+
+  // Guards a number that looked plausible and was wrong: onshore wind LCOE fits at 43%/doubling
+  // on real IRENA data, about double any published onshore-wind learning rate, because LCOE
+  // improvements include capacity-factor gains that are not manufacturing learning.
+  it('refuses to fit a delivered-energy cost like LCOE', () => {
+    const { rows, fits, skipped } = computeWrightProjections([{ ...base, metric: 'LCOE' }])
+    expect(rows).toEqual([])
+    expect(fits).toEqual([])
+    expect(skipped[0]?.reason).toContain('delivered-energy cost')
+  })
+
+  // A hardware series with no viability bar — wind's total_installed_cost. The learning rate
+  // is a property of cost against capacity and needs no threshold; only the crossing date
+  // does. Requiring a bar here would have meant inventing one or silently getting no fit.
+  it('fits a series with no threshold, and projects nothing for it', () => {
+    const { rows, fits, skipped } = computeWrightProjections([
+      { ...base, threshold: null, baseline: null, direction: null },
+    ])
+    expect(fits).toHaveLength(1)
+    expect(fits[0]?.learning_rate).toBeCloseTo(0.2, 6)
+    expect(rows).toEqual([])
+    expect(skipped[0]?.reason).toContain('no threshold declared')
+  })
+
+  // The guard that replaces the curated `direction` check when no bar exists: a rising series
+  // cannot produce a negative log-log slope, so it still cannot earn a learning rate.
+  it('refuses a rising series even with no direction declared', () => {
+    const rising: WrightSeries = {
+      ...base,
+      threshold: null,
+      baseline: null,
+      direction: null,
+      costPoints: base.costPoints.map((point, index) => ({ ...point, value: 100 + index * 10 })),
+    }
+    const { fits, skipped } = computeWrightProjections([rising])
+    expect(fits).toEqual([])
+    expect(skipped[0]?.reason).toContain('no falling cost-vs-capacity relationship')
+  })
+
+  it('keeps segment in the fit key so two slices of one metric stay separate', () => {
+    const { fits } = computeWrightProjections([
+      { ...base, segment: 'onshore', threshold: 1e9 },
+      { ...base, segment: 'offshore', threshold: 1e9 },
+    ])
+    expect(fits.map((fit) => fit.segment)).toEqual(['onshore', 'offshore'])
   })
 })

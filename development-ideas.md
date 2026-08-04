@@ -8,6 +8,28 @@ priority. Add freely; promote to a real spec when one gets picked up.
 
 ## Projections & metric data
 
+- **Parametric LCOS model (Wright capex × market-condition grid) — Ember handed us the
+  spec.** Ember's "How Cheap is Battery Storage?" (Dec 2025) fully specifies the model:
+  six input assumptions translate $125/kWh capex → $65/MWh LCOS — **20-yr lifetime,
+  7% discount rate, 90% round-trip efficiency, 80% utilisation, 2%/yr degradation,
+  2% opex**. Their sensitivity test shows even Lazard-aligned inputs (11% discount, 92%
+  eff, 96% util) still yield ~$65/MWh on the same capex. This is the concrete input set
+  for the parametric model: Wright-project the *capex*, hold these six as scenario
+  variables, output an LCOS surface. Ember also ships a **live LCOS calculator** (capex,
+  opex, lifetime, degradation, utilisation, efficiency, discount rate) — a working
+  reference implementation. Record the six assumptions + ranges as curated reference;
+  build the model when the capex Wright fit is solid. (Battery cost decomposition
+  $75 core equipment + $50 EPC/grid is also a useful capex breakdown input.)
+- **Ember generation & capacity data — dual use, new subsystem.** Ember's open CSVs
+  (monthly/yearly generation global + lower-income + US-subnational; monthly wind/solar
+  capacity) serve two purposes: (a) an **alternative/fresher capacity source** (monthly
+  GW vs the annual IRENA/OWID series — could strengthen or cross-check the Wright
+  capacity axis), and (b) a genuinely **new adoption dimension** — actual deployment
+  (TWh generated, GW installed) by country and month over time, which is about *where
+  and how fast* technologies scaled, not their cost curves. (b) is closer to
+  idea-space/market context than to the hero-metric machinery. Ember is open-data
+  (attribution) so both are cleanly usable. Scope which use first before loading —
+  they land in different places.
 - **Multiple forward-projection paths (ETS + NZS + extrapolation).** Today the Wright
   crossing uses a single forward capacity path extrapolated from historical trend
   (v3.2 R1), which naively doubles forever and ignores saturation/policy. Ingest

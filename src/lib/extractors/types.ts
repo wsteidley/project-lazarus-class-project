@@ -8,12 +8,19 @@
 // writes them; these modules are pure so they can be tested against literal rows.
 
 // One dated fact about where a metric stood. Column order is the file's column order.
+//
+// `segment` is the slice the value covers: 'all' is the rolled-up total, and
+// on_grid/off_grid/onshore/offshore are its parts. Never sum a total together with its own
+// parts — read either the 'all' row or the parts, never both. It is a separate column from
+// `basis` because it says WHICH SUBSET was measured, where basis says HOW it was measured
+// (constant vs nominal dollars, DC vs AC); onshore wind in 2025 dollars needs both.
 export type ObservationRow = {
   dependency_name: string
   metric: string
   value: string
   unit: string
   basis: string
+  segment: string
   as_of: string
   scope: string
   method: string
@@ -46,6 +53,7 @@ export const OBSERVATION_COLUMNS: (keyof ObservationRow)[] = [
   'value',
   'unit',
   'basis',
+  'segment',
   'as_of',
   'scope',
   'method',
@@ -105,7 +113,7 @@ const by =
   }
 
 export const sortObservations = (rows: ObservationRow[]): ObservationRow[] =>
-  [...rows].sort(by<ObservationRow>(['dependency_name', 'metric', 'scope', 'as_of']))
+  [...rows].sort(by<ObservationRow>(['dependency_name', 'metric', 'segment', 'scope', 'as_of']))
 
 export const sortCapacity = (rows: CapacityRow[]): CapacityRow[] =>
   [...rows].sort(by<CapacityRow>(['technology', 'metric', 'scope', 'as_of']))

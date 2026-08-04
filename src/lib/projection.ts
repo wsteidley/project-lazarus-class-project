@@ -12,6 +12,7 @@ export type ProgressPoint = {
   dependency_id: number
   metric: string
   scope: string
+  segment: string
   as_of: string
   progress: number | null
 }
@@ -21,6 +22,7 @@ export type ProjectionRow = {
   dependency_id: number
   metric: string
   scope: string
+  segment: string
   as_of: string
   progress: number
   method: (typeof PROJECTION_METHOD)[number]
@@ -78,7 +80,7 @@ export const linearFit = (
 }
 
 const seriesKey = (point: ProgressPoint): string =>
-  `${point.dependency_id}::${point.metric}::${point.scope}`
+  `${point.dependency_id}::${point.metric}::${point.segment}::${point.scope}`
 
 // Groups progress rows into series and, for each series not yet crossed, projects future
 // points up to (and including) the crossing. Series that are already crossed, too short, or
@@ -135,6 +137,7 @@ export const computeProjections = (
       dependency_id: latest.dependency_id,
       metric: latest.metric,
       scope: latest.scope,
+      segment: latest.segment,
       method: PROJECTION_METHOD[0],
       fit_window_n: window.length,
       confidence: fit.r2,

@@ -214,6 +214,7 @@ CREATE TABLE metric_projections (
   dependency_id INTEGER NOT NULL REFERENCES dependencies(id),
   metric        TEXT,
   scope         TEXT,
+  segment       TEXT,
   as_of         TEXT,
   progress      REAL,
   projected     INTEGER DEFAULT 1,
@@ -222,6 +223,29 @@ CREATE TABLE metric_projections (
   confidence    REAL,
   is_crossing   INTEGER,
   note          TEXT
+);
+
+-- Learning-rate fits, kept apart from metric_projections because a fit and a forecast are
+-- different claims. metric_projections answers "when will this cross?"; this answers "how fast
+-- does it get cheaper per doubling of deployment?" -- which stays true, and stays interesting,
+-- after a series has already crossed. Onshore wind (crossed 2019) and battery (crossed 2025)
+-- produce a fit here and no projection at all; storing the rate only inside a projection note
+-- would lose it for exactly those series.
+--
+-- learning_rate is the fraction shaved per doubling (solar ~0.28); b is the raw log-log slope
+-- it derives from; r2 and n_pairs are the evidence for believing it.
+CREATE TABLE wright_fits (
+  dependency_id INTEGER NOT NULL REFERENCES dependencies(id),
+  metric        TEXT NOT NULL,
+  scope         TEXT NOT NULL,
+  segment       TEXT NOT NULL,
+  learning_rate REAL,
+  b             REAL,
+  r2            REAL,
+  n_pairs       INTEGER,
+  first_as_of   TEXT,
+  last_as_of    TEXT,
+  PRIMARY KEY (dependency_id, metric, scope, segment)
 );
 
 CREATE TABLE company_dependencies (
@@ -263,6 +287,13 @@ CREATE TABLE dependency_assessments (
 -- dollars and USD/W in constant 2024 dollars are different measurements, and comparing one
 -- against a bar declared on the other silently answers the viability question wrong. One
 -- basis per series (v3 Fix 2).
+-- segment names the SLICE the value covers: 'all' is the rolled-up total, and the parts
+-- (bev/stationary, onshore/offshore, on_grid/off_grid) sit alongside it. Never sum a total
+-- together with its own parts. It is distinct from basis: basis says how a value was
+-- measured (constant vs nominal dollars, DC vs AC), segment says which subset was measured.
+-- Without it a slice has to be smuggled into the metric name -- which is what
+-- "battery pack price (BEV)" was doing, silently preventing the bar declared on
+-- "battery pack price" from ever joining its own observations.
 CREATE TABLE metric_observations (
   id            INTEGER PRIMARY KEY,
   dependency_id INTEGER NOT NULL REFERENCES dependencies(id),
@@ -270,6 +301,11 @@ CREATE TABLE metric_observations (
   value         REAL,
   unit          TEXT,
   basis         TEXT,
+  -- NOT NULL DEFAULT 'all' is load-bearing, not tidiness: segment is an equality key in the
+  -- trajectory self-join, and NULL = NULL is never true in SQL. A row inserted without a
+  -- segment would therefore vanish from trajectory entirely rather than error. The default
+  -- makes the safe reading ("this is the rolled-up total") the automatic one.
+  segment       TEXT NOT NULL DEFAULT 'all',
   as_of         TEXT,
   scope         TEXT,
   method        TEXT ${checkIn('method', OBSERVATION_METHOD)},
@@ -323,19 +359,23 @@ CREATE TABLE raw_documents (
 -- Crossing is answered directly in the trajectory view, never from progress. progress_alt is
 -- the same against a contested bar's alternative; log_distance = ln(T/v) is baseline-free and
 -- reads cost-curve (below_is_better) metrics correctly on a log axis.
+-- segment is part of the series key everywhere below: a BEV pack and an all-segment pack are
+-- different series that happen to share a bar, so they must get their own baseline, their own
+-- slope and their own crossing date. The threshold join deliberately does NOT include segment
+-- -- a bar is declared per (metric, scope) and applies to every slice of it.
 CREATE VIEW progress AS
 WITH obs AS (
   SELECT
-    o.dependency_id, o.metric, o.scope, o.as_of,
+    o.dependency_id, o.metric, o.segment, o.scope, o.as_of,
     o.value AS value_raw, o.unit,
     FIRST_VALUE(o.value) OVER (
-      PARTITION BY o.dependency_id, o.metric, o.scope ORDER BY o.as_of
+      PARTITION BY o.dependency_id, o.metric, o.segment, o.scope ORDER BY o.as_of
     ) AS earliest_value
   FROM metric_observations o
 ),
 joined AS (
   SELECT
-    obs.dependency_id, obs.metric, obs.scope, obs.as_of, obs.value_raw, obs.unit,
+    obs.dependency_id, obs.metric, obs.segment, obs.scope, obs.as_of, obs.value_raw, obs.unit,
     COALESCE(t.baseline_value, obs.earliest_value) AS baseline,
     t.threshold_value AS threshold, t.threshold_direction AS direction,
     t.threshold_contested AS contested, t.threshold_alt_value AS threshold_alt,
@@ -357,7 +397,7 @@ statused AS (
   FROM joined
 )
 SELECT
-  s.dependency_id, s.metric, s.scope, s.as_of, s.value_raw, s.unit, s.baseline,
+  s.dependency_id, s.metric, s.segment, s.scope, s.as_of, s.value_raw, s.unit, s.baseline,
   s.threshold, s.direction, s.contested, s.threshold_alt, s.policy_dependent,
   s.progress_status,
   CASE WHEN s.progress_status = 'ok' THEN
@@ -385,15 +425,15 @@ FROM statused s;
 CREATE VIEW trajectory AS
 WITH ranked AS (
   SELECT
-    p.dependency_id, p.metric, p.scope, p.as_of, p.progress,
+    p.dependency_id, p.metric, p.segment, p.scope, p.as_of, p.progress,
     p.value_raw, p.threshold, p.direction, p.policy_dependent,
-    ROW_NUMBER() OVER (PARTITION BY p.dependency_id, p.metric, p.scope ORDER BY p.as_of DESC) AS rn_desc,
-    COUNT(*) OVER (PARTITION BY p.dependency_id, p.metric, p.scope) AS n_obs
+    ROW_NUMBER() OVER (PARTITION BY p.dependency_id, p.metric, p.segment, p.scope ORDER BY p.as_of DESC) AS rn_desc,
+    COUNT(*) OVER (PARTITION BY p.dependency_id, p.metric, p.segment, p.scope) AS n_obs
   FROM progress p
 ),
 paired AS (
   SELECT
-    l.dependency_id, l.metric, l.scope,
+    l.dependency_id, l.metric, l.segment, l.scope,
     l.as_of AS latest_as_of, l.progress AS latest_progress, l.n_obs,
     l.value_raw AS latest_value, l.threshold, l.direction, l.policy_dependent,
     s.as_of AS window_start_as_of, s.progress AS window_start_progress,
@@ -401,12 +441,13 @@ paired AS (
       / NULLIF((julianday(l.as_of || '-01') - julianday(s.as_of || '-01')) / 365.25, 0) AS slope
   FROM ranked l
   JOIN ranked s
-    ON s.dependency_id = l.dependency_id AND s.metric = l.metric AND s.scope = l.scope
+    ON s.dependency_id = l.dependency_id AND s.metric = l.metric
+   AND s.segment = l.segment AND s.scope = l.scope
    AND l.rn_desc = 1
    AND s.rn_desc = MIN(l.n_obs, (SELECT window_n FROM trajectory_config LIMIT 1))
 )
 SELECT
-  paired.dependency_id, paired.metric, paired.scope,
+  paired.dependency_id, paired.metric, paired.segment, paired.scope,
   paired.latest_as_of, paired.latest_progress, paired.n_obs,
   paired.window_start_as_of, paired.window_start_progress, paired.slope,
   CASE
@@ -426,7 +467,8 @@ SELECT
     ELSE 0
   END AS currently_crossed,
   (SELECT MIN(p2.as_of) FROM progress p2
-   WHERE p2.dependency_id = paired.dependency_id AND p2.metric = paired.metric AND p2.scope = paired.scope
+   WHERE p2.dependency_id = paired.dependency_id AND p2.metric = paired.metric
+     AND p2.segment = paired.segment AND p2.scope = paired.scope
      AND ((p2.direction = 'below_is_better' AND p2.value_raw <= p2.threshold)
        OR (p2.direction = 'above_is_better' AND p2.value_raw >= p2.threshold))) AS became_viable_date
 FROM paired;

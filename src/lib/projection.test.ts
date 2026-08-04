@@ -5,6 +5,7 @@ const point = (as_of: string, progress: number | null): ProgressPoint => ({
   dependency_id: 1,
   metric: 'm',
   scope: 'global',
+  segment: 'all',
   as_of,
   progress,
 })

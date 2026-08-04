@@ -1,11 +1,16 @@
 [project]
 name = "lazarus-extract"
 version = "0.1.0"
-description = "Binary-workbook extractors for Project Lazarus (reads .xlsb; TypeScript owns the derived schema)"
+description = "Spreadsheet extractors for Project Lazarus (reads .xlsb/.xlsx; TypeScript owns the derived schema)"
 requires-python = ">=3.10"
 dependencies = [
   "pandas>=2",
   "pyxlsb>=1.0.10",
+  # .xlsx reader for the IRENA RPGC cost workbook. Not optional and not replaceable by
+  # stdlib zip+XML parsing: a hand-rolled reader silently mis-aligned this very sheet by one
+  # column (a shared-string cell read as a numeric index) and produced a confident but
+  # completely wrong learning rate. It looked like data, not like an error.
+  "openpyxl>=3.1",
 ]
 
 # Kept separate from resolve/ on purpose: this project exists to read a spreadsheet, and

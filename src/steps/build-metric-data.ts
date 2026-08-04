@@ -8,6 +8,8 @@ import { derivedDir, sourcesDir } from '../config.js'
 import { type CsvRow, readCsv, writeCsv } from '../lib/csv.js'
 import { extractCapacityAnchors, extractCitedAnchors } from '../lib/extractors/cited-anchors.js'
 import { extractIrenaCapacity } from '../lib/extractors/irena-capacity.js'
+import { extractIrenaRpgc } from '../lib/extractors/irena-rpgc.js'
+import { extractIrenaTic } from '../lib/extractors/irena-tic.js'
 import { extractOwidSolarCapacity } from '../lib/extractors/owid-solar-capacity.js'
 import { extractOwidSolarCost } from '../lib/extractors/owid-solar-cost.js'
 import {
@@ -31,23 +33,29 @@ import { curatedFile, derivedFile } from '../lib/paths.js'
 // That only holds if the output is deterministic — hence fixed rounding, a stable sort,
 // and no timestamps anywhere in the output.
 //
-// uv contract: the IRENA extractor needs Python to read a .xlsb, and a missing uv is an
-// ERROR you must explicitly override — never an implicit skip. This is unlike
+// uv contract: two IRENA extractors need Python to read binary/zipped workbooks — the
+// .xlsb capacity series and the .xlsx wind installed-cost series — and a missing uv is an
+// ERROR you must explicitly override, never an implicit skip. This is unlike
 // resolve:fuzzy, where skipping the optional Splink tier costs nothing. Here a silent skip
-// would corrupt the audit itself: the loop above deletes capacity_series.csv first, so a
-// run that declines to regenerate it and still exits 0 leaves a phantom deletion sitting
+// would corrupt the audit itself: the loop above deletes the derived CSVs first, so a
+// run that declines to regenerate them and still exits 0 leaves a phantom deletion sitting
 // in the very diff the audit is being read as. The audit runs with no flags, so it always
 // gets the strict path.
 //
 //   uv present                              -> run normally (flag irrelevant)
 //   uv absent, no flag                      -> hard fail, nothing written
 //   uv absent, --allow-stale-metric-data,
-//     committed capacity_series.csv present  -> warn, reuse it, skip the extractor
-//   uv absent, flag, that file missing       -> hard fail; nothing to fall back to
+//     both committed derived CSVs present    -> warn, reuse them, skip BOTH extractors
+//   uv absent, flag, either file missing     -> hard fail; nothing to fall back to
+//
+// BOTH derived files are covered, not just capacity: wind installed cost feeds
+// metric_observations, so a uv-less run that still rewrote the observations file would
+// drop 16 rows from it silently — the partial-write corruption this flag exists to
+// prevent, just in the other file.
 //
 // The flag is named for what you accept (stale data), not for what it disables, so it
-// isn't reached for reflexively. A crashed irena_capacity.py — as distinct from an absent
-// uv — is a hard failure in every case, flag or not.
+// isn't reached for reflexively. A crashed extractor — as distinct from an absent uv — is
+// a hard failure in every case, flag or not.
 
 const { values: options } = parseArgs({
   options: { 'allow-stale-metric-data': { type: 'boolean', default: false } },
@@ -59,7 +67,15 @@ const OWID_SOLAR_CAPACITY = join(
   'owid/installed-solar-pv-capacity/installed-solar-pv-capacity.csv',
 )
 const IRENA_XLSB = join(sourcesDir, 'irena/IRENA_Stats_Tool_v2.xlsb')
+// The RPGC cost workbook. The wind installed-cost series is read from it directly (via
+// Python); the other RPGC metrics are still hand-staged CSVs alongside it — see the
+// derivation map's standing TODO to move those onto this file too.
+const IRENA_XLSX = join(sourcesDir, 'irena/IRENA_TEC_RPGC_in_2025_data_file_2026.xlsx')
+// Hand-staged extracts of the workbook above. Plain CSV reads, so these need no uv.
+const IRENA_LCOE = join(sourcesDir, 'irena/irena_lcoe_series.csv')
+const IRENA_EXTENDED = join(sourcesDir, 'irena/irena_rpgc_extended.csv')
 const CAPACITY_SERIES = 'capacity_series.csv'
+const OBSERVATIONS = 'metric_observations_full.csv'
 
 // Decides the uv question once, up front, before any extractor runs — so a refusal costs
 // nothing and can never leave a half-updated data/derived behind. `refuse` follows the
@@ -78,56 +94,58 @@ const resolveIrenaPlan = (): IrenaPlan => {
 
   if (!options['allow-stale-metric-data']) {
     console.error(
-      `\n✗ uv not found — cannot regenerate ${CAPACITY_SERIES} (IRENA wind extractor requires uv).\n` +
+      `\n✗ uv not found — cannot regenerate ${CAPACITY_SERIES} or ${OBSERVATIONS}\n` +
+        '  (the IRENA capacity .xlsb and wind installed-cost .xlsx extractors both require uv).\n' +
         '  Install uv (https://docs.astral.sh/uv/), or re-run with --allow-stale-metric-data\n' +
-        '  to use the existing committed file.',
+        '  to use the existing committed files.',
     )
     return 'refuse'
   }
-  if (!existsSync(derivedFile(CAPACITY_SERIES))) {
+  // Both files, not just capacity: wind installed cost feeds the observations file, so
+  // falling back on one while rewriting the other would produce exactly the half-updated
+  // data/derived this gate exists to prevent.
+  const missing = [CAPACITY_SERIES, OBSERVATIONS].filter((file) => !existsSync(derivedFile(file)))
+  if (missing.length > 0) {
     console.error(
       `\n✗ uv not found, and --allow-stale-metric-data has nothing to fall back to:\n` +
-        `  ${derivedFile(CAPACITY_SERIES)} does not exist.\n` +
+        missing.map((file) => `  ${derivedFile(file)} does not exist.\n`).join('') +
         '  Install uv (https://docs.astral.sh/uv/) — there is no committed file to reuse.',
     )
     return 'refuse'
   }
 
-  console.warn(`\n⚠ uv not found — reusing the committed ${CAPACITY_SERIES} (STALE).`)
-  console.warn('  Onshore wind capacity was NOT regenerated from the IRENA workbook.')
+  console.warn(
+    `\n⚠ uv not found — reusing the committed ${CAPACITY_SERIES} + ${OBSERVATIONS} (STALE).`,
+  )
+  console.warn('  Onshore wind capacity and wind installed cost were NOT regenerated from the')
+  console.warn('  IRENA workbooks; every other extractor was skipped too, because a partial')
+  console.warn('  rewrite of these files is worse than leaving them alone.')
   console.warn(
     '  Install uv and re-run without --allow-stale-metric-data before trusting a diff.\n',
   )
   return 'reuse-committed'
 }
 
-// Runs the Python half of the IRENA extractor and hands back its flat scratch CSV. Only
+// Runs the Python half of an IRENA extractor and hands back its flat scratch CSV. Only
 // called once resolveIrenaPlan has confirmed uv is present. The scratch file is transport,
 // not a store: it lives in a temp dir and is removed here, so this step writes nothing
 // under data/ but its own output.
-const readIrenaScratch = async (): Promise<CsvRow[]> => {
+const readPythonScratch = async (
+  script: string,
+  sourceFlag: string,
+  sourcePath: string,
+): Promise<CsvRow[]> => {
   const scratchDir = mkdtempSync(join(tmpdir(), 'lazarus-irena-'))
   try {
-    const scratch = join(scratchDir, 'irena_onshore_wind.csv')
+    const scratch = join(scratchDir, 'scratch.csv')
     const run = spawnSync(
       'uv',
-      [
-        'run',
-        '--project',
-        'extract',
-        'extract/irena_capacity.py',
-        '--xlsb',
-        IRENA_XLSB,
-        '--out',
-        scratch,
-      ],
+      ['run', '--project', 'extract', script, sourceFlag, sourcePath, '--out', scratch],
       { stdio: 'inherit' },
     )
     if (run.status !== 0) {
       // A crashed extractor is a real error, never a graceful skip.
-      throw new Error(
-        `extract/irena_capacity.py exited with status ${run.status ?? 'null (signal)'}`,
-      )
+      throw new Error(`${script} exited with status ${run.status ?? 'null (signal)'}`)
     }
     return await readCsv(scratch)
   } finally {
@@ -158,7 +176,10 @@ const main = async (): Promise<void> => {
     process.exitCode = 1
     return
   }
-  const regenerateCapacity = irena === 'run'
+  // Both derived files ride on the same decision now: the .xlsb feeds capacity, the .xlsx
+  // feeds observations, and rewriting one while the other goes stale is the half-updated
+  // state the gate refuses to produce.
+  const regenerate = irena === 'run'
 
   console.log('Extracting metric data from data/sources + data/curated ...')
 
@@ -172,19 +193,54 @@ const main = async (): Promise<void> => {
   observations.push(...citedAnchors.rows)
   unparsed.push(...citedAnchors.unparsed)
 
+  // IRENA RPGC: multi-metric, and the first extractor that emits BOTH observations and capacity
+  // from the same input (battery cost + the BESS additions cumulated into its Wright axis).
+  const irenaRpgc = extractIrenaRpgc([
+    ...(await readCsv(IRENA_LCOE)),
+    ...(await readCsv(IRENA_EXTENDED)),
+  ])
+  report('irena-rpgc', irenaRpgc.observations)
+  observations.push(...irenaRpgc.observations.rows)
+  unparsed.push(...irenaRpgc.observations.unparsed)
+  // Named, not just counted: these rows are valid data with nowhere to live until the
+  // technology/dependency split lands, and a bare "excluded: 100" would read as a filter
+  // working rather than as a queue of held findings.
+  for (const [subject, count] of [...irenaRpgc.held].sort()) {
+    console.log(`    held for technology/dependency split: ${subject} (${count} rows)`)
+  }
+
+  // Wind's Wright-fittable cost curve, read straight from the committed .xlsx. Wind LCOE
+  // above is the viability series and is deliberately never fitted; this is the hardware
+  // capex series that is.
+  if (regenerate) {
+    const windCost = extractIrenaTic(
+      await readPythonScratch('extract/irena_tic.py', '--xlsx', IRENA_XLSX),
+    )
+    report('irena-tic', windCost)
+    observations.push(...windCost.rows)
+    unparsed.push(...windCost.unparsed)
+  } else {
+    console.log(`  irena-tic: SKIPPED — reusing the committed ${OBSERVATIONS}`)
+  }
+
   const solarCapacity = extractOwidSolarCapacity(await readCsv(OWID_SOLAR_CAPACITY))
   report('owid-solar-capacity', solarCapacity)
   capacity.push(...solarCapacity.rows)
   unparsed.push(...solarCapacity.unparsed)
 
-  if (regenerateCapacity) {
-    const wind = extractIrenaCapacity(await readIrenaScratch())
+  if (regenerate) {
+    const wind = extractIrenaCapacity(
+      await readPythonScratch('extract/irena_capacity.py', '--xlsb', IRENA_XLSB),
+    )
     report('irena-capacity', wind)
     capacity.push(...wind.rows)
     unparsed.push(...wind.unparsed)
   } else {
     console.log(`  irena-capacity: SKIPPED — reusing the committed ${CAPACITY_SERIES}`)
   }
+
+  report('irena-rpgc-capacity', irenaRpgc.capacity)
+  capacity.push(...irenaRpgc.capacity.rows)
 
   const capacityAnchors = extractCapacityAnchors(await readCsv(curatedFile('capacity_anchors.csv')))
   report('capacity-anchors', capacityAnchors)
@@ -200,24 +256,25 @@ const main = async (): Promise<void> => {
   // The audit deletes the derived files before rebuilding, so the step has to be able to
   // recreate the directory itself — otherwise the documented audit command fails.
   await mkdir(derivedDir, { recursive: true })
-  await writeCsv(sortObservations(observations), derivedFile('metric_observations_full.csv'))
 
-  if (regenerateCapacity) {
+  if (regenerate) {
+    await writeCsv(sortObservations(observations), derivedFile(OBSERVATIONS))
     await writeCsv(sortCapacity(capacity), derivedFile(CAPACITY_SERIES))
   } else {
     // Reached only under --allow-stale-metric-data. Writing what we have would replace the
-    // committed file with one missing its entire wind series — the corruption the flag is
-    // explicitly not allowed to cause.
-    console.warn(`\nNOT writing ${CAPACITY_SERIES} — the committed file is left untouched.`)
-    console.warn('  It is stale with respect to the IRENA workbook until uv is available.')
+    // committed files with ones missing the entire wind capacity and wind installed-cost
+    // series — the corruption the flag is explicitly not allowed to cause.
+    console.warn(
+      `\nNOT writing ${OBSERVATIONS} or ${CAPACITY_SERIES} — the committed files are left untouched.`,
+    )
+    console.warn('  They are stale with respect to the IRENA workbooks until uv is available.')
   }
 
   console.log(
-    `\n${observations.length} metric observations` +
-      (regenerateCapacity
-        ? `, ${capacity.length} capacity points`
-        : ' (capacity series left stale)') +
-      (unparsed.length > 0 ? ` (${unparsed.length} unparsed — see warnings above)` : ''),
+    regenerate
+      ? `\n${observations.length} metric observations, ${capacity.length} capacity points` +
+          (unparsed.length > 0 ? ` (${unparsed.length} unparsed — see warnings above)` : '')
+      : '\nderived files left stale (uv unavailable)',
   )
   console.log('\nDONE\n')
 }

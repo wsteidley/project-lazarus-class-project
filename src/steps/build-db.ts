@@ -390,9 +390,9 @@ const main = async (): Promise<void> => {
   }
   const insertObservation = db.prepare(
     `INSERT INTO metric_observations
-      (dependency_id, metric, value, unit, basis, as_of, scope, method, source_url,
+      (dependency_id, metric, value, unit, basis, segment, as_of, scope, method, source_url,
        source_name, note)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   )
   let observationsInserted = 0
   for (const row of resolvedObservations) {
@@ -407,6 +407,8 @@ const main = async (): Promise<void> => {
       toReal(row.value),
       toText(row.unit),
       toText(row.basis),
+      // Rows predating the segment column are the rolled-up total by definition.
+      toText(row.segment) ?? 'all',
       toText(row.as_of),
       toText(row.scope),
       toText(row.method),
@@ -539,20 +541,39 @@ const main = async (): Promise<void> => {
   // covers everything else. Today that means Wright fits solar and linear fits the rest —
   // wind LCOE has 2 cost points and battery has 1 capacity point, so neither can support a
   // learning curve yet. The fallback is the common path, not the exception.
+  //
+  // Read from metric_observations, NOT from the progress view. progress inner-joins
+  // dependency_thresholds, so sourcing from it silently limited Wright to series that have a
+  // curated bar — and a learning rate does not need one. Wind's total_installed_cost is the
+  // series that exposed this: it is the Wright-fittable wind curve and it has no viability
+  // bar, so the old query would have found nothing and reported no fit rather than an error.
+  // The bar is LEFT JOINed because the projection still needs it; the fit does not.
+  //
+  // baseline mirrors the progress view's rule (declared baseline, else earliest observation)
+  // so a wright projection lands on exactly the same 0->1 axis as a linear one.
   const wrightInput = db
     .prepare(
-      `SELECT p.dependency_id, p.metric, p.scope, p.direction, p.baseline, p.threshold,
-              p.as_of, p.value_raw
-       FROM progress p
-       WHERE p.dependency_id IN (SELECT DISTINCT dependency_id FROM capacity_series)`,
+      `SELECT o.dependency_id, o.metric, o.scope, o.segment, o.as_of, o.value AS value_raw,
+              t.threshold_direction AS direction,
+              t.threshold_value AS threshold,
+              COALESCE(t.baseline_value, FIRST_VALUE(o.value) OVER (
+                PARTITION BY o.dependency_id, o.metric, o.segment, o.scope ORDER BY o.as_of
+              )) AS baseline
+       FROM metric_observations o
+       LEFT JOIN dependency_thresholds t
+         ON t.dependency_id = o.dependency_id AND t.metric = o.metric AND t.scope = o.scope
+        AND t.threshold_value IS NOT NULL
+       WHERE o.value IS NOT NULL
+         AND o.dependency_id IN (SELECT DISTINCT dependency_id FROM capacity_series)`,
     )
     .all() as {
     dependency_id: number
     metric: string
     scope: string
-    direction: string
-    baseline: number
-    threshold: number
+    segment: string
+    direction: string | null
+    baseline: number | null
+    threshold: number | null
     as_of: string
     value_raw: number
   }[]
@@ -571,7 +592,10 @@ const main = async (): Promise<void> => {
   }
   const wrightSeries = new Map<string, WrightSeries>()
   for (const row of wrightInput) {
-    const key = `${row.dependency_id}::${row.metric}::${row.scope}`
+    // segment is part of the key: without it an onshore and an offshore series, or a BEV and an
+    // all-segment pack price, would pour their points into one costPoints array and be fitted
+    // as a single curve.
+    const key = `${row.dependency_id}::${row.metric}::${row.segment}::${row.scope}`
     const existing = wrightSeries.get(key)
     if (existing) {
       existing.costPoints.push({ as_of: row.as_of, value: row.value_raw })
@@ -581,6 +605,7 @@ const main = async (): Promise<void> => {
       dependency_id: row.dependency_id,
       metric: row.metric,
       scope: row.scope,
+      segment: row.segment,
       direction: row.direction,
       baseline: row.baseline,
       threshold: row.threshold,
@@ -590,33 +615,65 @@ const main = async (): Promise<void> => {
   }
   const wright = computeWrightProjections([...wrightSeries.values()])
   for (const entry of wright.skipped) {
-    console.warn(`  wright fit skipped for "${entry.metric}": ${entry.reason} — using linear fit`)
+    console.warn(`  wright projection skipped for "${entry.metric}": ${entry.reason}`)
   }
+
+  // wright_fits: the learning rates, stored whether or not a projection followed. An
+  // already-crossed series (onshore wind 2019, battery 2025) yields a fit and no projection —
+  // recording it here is what keeps that finding rather than discarding it with the forecast.
+  const insertWrightFit = db.prepare(
+    `INSERT OR REPLACE INTO wright_fits
+      (dependency_id, metric, scope, segment, learning_rate, b, r2, n_pairs, first_as_of, last_as_of)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  )
+  for (const fit of wright.fits) {
+    insertWrightFit.run(
+      fit.dependency_id,
+      fit.metric,
+      fit.scope,
+      fit.segment,
+      fit.learning_rate,
+      fit.b,
+      fit.r2,
+      fit.n_pairs,
+      fit.first_as_of,
+      fit.last_as_of,
+    )
+    console.log(
+      `  wright fit "${fit.metric}" (${fit.segment}): ${(fit.learning_rate * 100).toFixed(0)}%/doubling, ` +
+        `R2=${fit.r2.toFixed(2)}, ${fit.n_pairs} pairs (${fit.first_as_of}..${fit.last_as_of})`,
+    )
+  }
+
   // Series Wright already covered are excluded from the linear pass, so a series never
   // carries two competing projections.
   const wrightCovered = new Set(
-    wright.rows.map((row) => `${row.dependency_id}::${row.metric}::${row.scope}`),
+    wright.rows.map((row) => `${row.dependency_id}::${row.metric}::${row.segment}::${row.scope}`),
   )
   const progressRows = (
     db
-      .prepare('SELECT dependency_id, metric, scope, as_of, progress FROM progress')
+      .prepare('SELECT dependency_id, metric, scope, segment, as_of, progress FROM progress')
       .all() as ProgressPoint[]
-  ).filter((row) => !wrightCovered.has(`${row.dependency_id}::${row.metric}::${row.scope}`))
+  ).filter(
+    (row) =>
+      !wrightCovered.has(`${row.dependency_id}::${row.metric}::${row.segment}::${row.scope}`),
+  )
   const projections = [
     ...wright.rows,
     ...computeProjections(progressRows, { windowN: trajectoryConfig.windowN }),
   ]
   const insertProjection = db.prepare(
     `INSERT INTO metric_projections
-      (dependency_id, metric, scope, as_of, progress, projected, method, fit_window_n,
+      (dependency_id, metric, scope, segment, as_of, progress, projected, method, fit_window_n,
        confidence, is_crossing, note)
-     VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)`,
   )
   for (const row of projections) {
     insertProjection.run(
       row.dependency_id,
       row.metric,
       row.scope,
+      row.segment,
       row.as_of,
       row.progress,
       row.method,

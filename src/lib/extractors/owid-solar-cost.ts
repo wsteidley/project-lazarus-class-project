@@ -54,6 +54,9 @@ export const extractOwidSolarCost = (rows: CsvRow[]): ExtractResult<ObservationR
     value: fixed(point.value, PRECISION),
     unit: UNIT,
     basis: BASIS,
+    // OWID publishes one global module price with no on/off-grid or utility/rooftop split,
+    // so the series is the rolled-up total.
+    segment: 'all',
     as_of: yearAsOf(point.year),
     scope: 'global',
     method: 'curated',
