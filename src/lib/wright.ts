@@ -31,7 +31,10 @@ export type SeriesPoint = { as_of: string; value: number }
 // that forced this — it is the Wright-fittable wind series and it has no viability bar, so
 // requiring one would have meant either inventing a threshold or silently getting no fit.
 export type WrightSeries = {
-  dependency_id: number
+  entity_id: number
+  // The bar's owner, when the series was assembled with one. A fit needs no bar; a projected
+  // crossing does, and it must be able to say whose.
+  dependency_id?: number | null
   metric: string
   scope: string
   segment: string
@@ -53,7 +56,7 @@ export type WrightConfig = {
 // falling back. Every reason here is a real property of today's data, not a hypothetical:
 // wind LCOE has 2 cost points, battery has 1 capacity point.
 export type WrightSkip = {
-  dependency_id: number
+  entity_id: number
   metric: string
   scope: string
   segment: string
@@ -67,7 +70,7 @@ export type WrightSkip = {
 // away the learning rate for every technology that has already succeeded, which is most of the
 // interesting ones.
 export type WrightFit = {
-  dependency_id: number
+  entity_id: number
   metric: string
   scope: string
   segment: string
@@ -138,7 +141,8 @@ export const computeWrightProjections = (
 
   for (const entry of series) {
     const key = {
-      dependency_id: entry.dependency_id,
+      entity_id: entry.entity_id,
+      dependency_id: entry.dependency_id ?? null,
       metric: entry.metric,
       scope: entry.scope,
       segment: entry.segment,
@@ -253,7 +257,8 @@ export const computeWrightProjections = (
 
     const rate = learningRate(b)
     const base = {
-      dependency_id: entry.dependency_id,
+      entity_id: entry.entity_id,
+      dependency_id: entry.dependency_id ?? null,
       metric: entry.metric,
       scope: entry.scope,
       segment: entry.segment,

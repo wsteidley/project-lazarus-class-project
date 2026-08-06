@@ -9,7 +9,9 @@ import { PROJECTION_METHOD } from '../schemas.js'
 
 // One row of the `progress` view the projection consumes.
 export type ProgressPoint = {
-  dependency_id: number
+  entity_id: number
+  // Carried through so a projected crossing can name the bar it is a crossing OF.
+  dependency_id?: number | null
   metric: string
   scope: string
   segment: string
@@ -19,7 +21,9 @@ export type ProgressPoint = {
 
 // One projected point, shaped for insertion into metric_projections.
 export type ProjectionRow = {
-  dependency_id: number
+  entity_id: number
+  // Whose bar the crossing is against. Null when the fit ran with no bar at all.
+  dependency_id?: number | null
   metric: string
   scope: string
   segment: string
@@ -80,7 +84,7 @@ export const linearFit = (
 }
 
 const seriesKey = (point: ProgressPoint): string =>
-  `${point.dependency_id}::${point.metric}::${point.segment}::${point.scope}`
+  `${point.entity_id}::${point.dependency_id ?? ''}::${point.metric}::${point.segment}::${point.scope}`
 
 // Groups progress rows into series and, for each series not yet crossed, projects future
 // points up to (and including) the crossing. Series that are already crossed, too short, or
@@ -134,7 +138,8 @@ export const computeProjections = (
     }
 
     const base = {
-      dependency_id: latest.dependency_id,
+      entity_id: latest.entity_id,
+      dependency_id: latest.dependency_id ?? null,
       metric: latest.metric,
       scope: latest.scope,
       segment: latest.segment,

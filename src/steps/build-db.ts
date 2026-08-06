@@ -48,7 +48,13 @@ const main = async (): Promise<void> => {
   // v2 threshold layer: bars keyed (dependency, metric, scope), and causal links between
   // dependencies. Curated inputs.
   const thresholds = await readCsvIfExists(curatedFile('dependency_thresholds.csv'))
+  const dependencyEdges = await readCsvIfExists(curatedFile('dependency_edges.csv'))
+  // The technology/dependency split's two seeds: the data-bearing subjects, and which
+  // dependency hangs off which of them.
+  const referenceEntities = await readCsvIfExists(curatedFile('reference_entities.csv'))
   const dependencyLinks = await readCsvIfExists(curatedFile('dependency_links.csv'))
+  // What was actually searched. Its absence is what keeps an empty region 'unsampled'.
+  const searchCoverage = await readCsvIfExists(curatedFile('search_coverage.csv'))
   const rawDocuments = await readAllCachedDocuments()
 
   if (existsSync(dbFile)) {
@@ -69,12 +75,15 @@ const main = async (): Promise<void> => {
     fundingRounds,
     challenges,
     dependencies,
+    referenceEntities,
+    dependencyLinks,
+    searchCoverage,
     thresholds,
     companyDependencies,
     assessments,
     metricObservations,
     capacitySeries,
-    dependencyLinks,
+    dependencyEdges,
     rawDocuments,
   })
 
@@ -133,21 +142,30 @@ const main = async (): Promise<void> => {
   // so a wright projection lands on exactly the same 0->1 axis as a linear one.
   const wrightInput = db
     .prepare(
-      `SELECT o.dependency_id, o.metric, o.scope, o.segment, o.as_of, o.value AS value_raw,
+      `SELECT o.entity_id, dl.dependency_name, d.id AS dependency_id,
+              o.metric, o.scope, o.segment, o.as_of, o.value AS value_raw,
               t.threshold_direction AS direction,
               t.threshold_value AS threshold,
               COALESCE(t.baseline_value, FIRST_VALUE(o.value) OVER (
-                PARTITION BY o.dependency_id, o.metric, o.segment, o.scope ORDER BY o.as_of
+                PARTITION BY o.entity_id, o.metric, o.segment, o.scope ORDER BY o.as_of
               )) AS baseline
        FROM metric_observations o
+       -- The bar hop is LEFT all the way down: a fit needs a curve, not a bar, and not even a
+       -- dependency. Wind's total_installed_cost is the case that proved it -- Wright-fittable,
+       -- no viability bar -- and post-split five more technologies have curves with no
+       -- dependency at all. They still get a learning rate.
+       LEFT JOIN dependency_links dl ON dl.entity_id = o.entity_id
+       LEFT JOIN dependencies d      ON d.name = dl.dependency_name
        LEFT JOIN dependency_thresholds t
-         ON t.dependency_id = o.dependency_id AND t.metric = o.metric AND t.scope = o.scope
+         ON t.dependency_id = d.id AND t.metric = o.metric AND t.scope = o.scope
         AND t.threshold_value IS NOT NULL
+        AND t.basis = o.basis AND t.energy_basis = o.energy_basis AND t.duration = o.duration
        WHERE o.value IS NOT NULL
-         AND o.dependency_id IN (SELECT DISTINCT dependency_id FROM capacity_series)`,
+         AND o.entity_id IN (SELECT DISTINCT entity_id FROM capacity_series)`,
     )
     .all() as {
-    dependency_id: number
+    entity_id: number
+    dependency_id: number | null
     metric: string
     scope: string
     segment: string
@@ -157,32 +175,35 @@ const main = async (): Promise<void> => {
     as_of: string
     value_raw: number
   }[]
-  const capacityByDependency = new Map<number, SeriesPoint[]>()
+  const capacityByEntity = new Map<number, SeriesPoint[]>()
   for (const row of db
     .prepare(
       // Historical only: a scenario row is a forecast, and fitting a forecast would launder
       // an assumption into evidence.
-      `SELECT dependency_id, as_of, value FROM capacity_series
+      `SELECT entity_id, as_of, value FROM capacity_series
        WHERE scenario = 'historical' AND value IS NOT NULL`,
     )
-    .all() as { dependency_id: number; as_of: string; value: number }[]) {
-    const list = capacityByDependency.get(row.dependency_id) ?? []
+    .all() as { entity_id: number; as_of: string; value: number }[]) {
+    const list = capacityByEntity.get(row.entity_id) ?? []
     list.push({ as_of: row.as_of, value: row.value })
-    capacityByDependency.set(row.dependency_id, list)
+    capacityByEntity.set(row.entity_id, list)
   }
   const wrightSeries = new Map<string, WrightSeries>()
   for (const row of wrightInput) {
     // segment is part of the key: without it an onshore and an offshore series, or a BEV and an
     // all-segment pack price, would pour their points into one costPoints array and be fitted
     // as a single curve.
-    const key = `${row.dependency_id}::${row.metric}::${row.segment}::${row.scope}`
+    // Keyed on the ENTITY: a learning rate is a property of the curve, so three dependencies
+    // sharing one curve must not fit it three times (and the LEFT JOIN above emits one row per
+    // link, so without this they would).
+    const key = `${row.entity_id}::${row.metric}::${row.segment}::${row.scope}`
     const existing = wrightSeries.get(key)
     if (existing) {
       existing.costPoints.push({ as_of: row.as_of, value: row.value_raw })
       continue
     }
     wrightSeries.set(key, {
-      dependency_id: row.dependency_id,
+      entity_id: row.entity_id,
       metric: row.metric,
       scope: row.scope,
       segment: row.segment,
@@ -190,7 +211,7 @@ const main = async (): Promise<void> => {
       baseline: row.baseline,
       threshold: row.threshold,
       costPoints: [{ as_of: row.as_of, value: row.value_raw }],
-      capacityPoints: capacityByDependency.get(row.dependency_id) ?? [],
+      capacityPoints: capacityByEntity.get(row.entity_id) ?? [],
     })
   }
   const wright = computeWrightProjections([...wrightSeries.values()])
@@ -203,12 +224,12 @@ const main = async (): Promise<void> => {
   // recording it here is what keeps that finding rather than discarding it with the forecast.
   const insertWrightFit = db.prepare(
     `INSERT OR REPLACE INTO wright_fits
-      (dependency_id, metric, scope, segment, learning_rate, b, r2, n_pairs, first_as_of, last_as_of)
+      (entity_id, metric, scope, segment, learning_rate, b, r2, n_pairs, first_as_of, last_as_of)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   )
   for (const fit of wright.fits) {
     insertWrightFit.run(
-      fit.dependency_id,
+      fit.entity_id,
       fit.metric,
       fit.scope,
       fit.segment,
@@ -228,15 +249,16 @@ const main = async (): Promise<void> => {
   // Series Wright already covered are excluded from the linear pass, so a series never
   // carries two competing projections.
   const wrightCovered = new Set(
-    wright.rows.map((row) => `${row.dependency_id}::${row.metric}::${row.segment}::${row.scope}`),
+    wright.rows.map((row) => `${row.entity_id}::${row.metric}::${row.segment}::${row.scope}`),
   )
   const progressRows = (
     db
-      .prepare('SELECT dependency_id, metric, scope, segment, as_of, progress FROM progress')
+      .prepare(
+        'SELECT entity_id, dependency_id, metric, scope, segment, as_of, progress FROM progress',
+      )
       .all() as ProgressPoint[]
   ).filter(
-    (row) =>
-      !wrightCovered.has(`${row.dependency_id}::${row.metric}::${row.segment}::${row.scope}`),
+    (row) => !wrightCovered.has(`${row.entity_id}::${row.metric}::${row.segment}::${row.scope}`),
   )
   const projections = [
     ...wright.rows,
@@ -244,13 +266,14 @@ const main = async (): Promise<void> => {
   ]
   const insertProjection = db.prepare(
     `INSERT INTO metric_projections
-      (dependency_id, metric, scope, segment, as_of, progress, projected, method, fit_window_n,
-       confidence, is_crossing, note)
-     VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)`,
+      (entity_id, dependency_id, metric, scope, segment, as_of, progress, projected, method,
+       fit_window_n, confidence, is_crossing, note)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)`,
   )
   for (const row of projections) {
     insertProjection.run(
-      row.dependency_id,
+      row.entity_id,
+      row.dependency_id ?? null,
       row.metric,
       row.scope,
       row.segment,
@@ -264,6 +287,24 @@ const main = async (): Promise<void> => {
     )
   }
 
+  // P3 state histograms. Printed every build so a regression is loud: if the metric side
+  // silently stops joining, everything slides to no_blocker_data here rather than quietly
+  // becoming an empty join nobody sees.
+  const absenceHistogram = (view: string): string => {
+    const rows = db
+      .prepare(`SELECT status, COUNT(*) AS n FROM ${view} GROUP BY status ORDER BY n DESC`)
+      .all() as { status: string; n: number }[]
+    return rows.map((row) => `${row.status}=${row.n}`).join(', ') || '(none)'
+  }
+  console.log(`  dependency states: ${absenceHistogram('dependency_status')}`)
+  console.log(`  company x blocker states: ${absenceHistogram('company_dependency_status')}`)
+  const gapCells = db
+    .prepare('SELECT cell AS status, COUNT(*) AS n FROM gap_map GROUP BY cell ORDER BY n DESC')
+    .all() as { status: string; n: number }[]
+  console.log(
+    `  gap map: ${gapCells.map((row) => `${row.status}=${row.n}`).join(', ') || '(none)'}`,
+  )
+
   db.close()
 
   console.log(
@@ -276,7 +317,8 @@ const main = async (): Promise<void> => {
       `(${report.companyDependenciesUnresolved} unresolved, retained), ` +
       `${assessments.length} dependency_assessments, ${report.observationsInserted} metric_observations, ` +
       `${report.capacityInserted} capacity_series, ` +
-      `${report.linksInserted} dependency_links, ${projections.length} metric_projections ` +
+      `${report.entitiesInserted} reference_entities, ${report.linksInserted} dependency_links, ` +
+      `${report.edgesInserted} dependency_edges, ${projections.length} metric_projections ` +
       `(${wright.rows.length} wright, ${projections.length - wright.rows.length} linear), ` +
       `${rawDocuments.length} raw_documents` +
       (baselineEquals || baselinePast

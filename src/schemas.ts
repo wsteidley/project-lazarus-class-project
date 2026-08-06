@@ -144,10 +144,44 @@ export const THRESHOLD_KIND = [
 // is bad. Without this a crossing test cannot tell viability from regression.
 export const THRESHOLD_DIRECTION = ['below_is_better', 'above_is_better'] as const
 
+// The three orthogonal things "basis" used to mean at once. A series is only comparable to a
+// bar when all three agree, so they are separate equality-joined columns rather than one
+// overloaded string. 'na' means "this axis does not apply", and it matches only another 'na' —
+// never "matches anything", which would reintroduce the silent mismatch.
+//
+// Currency vintage. `real_usd` is deliberately its own member and is NOT quietly promoted to
+// real_2024_usd: BNEF does not state the vintage of its pack-price series, and inventing one
+// would launder an assumption into a viability verdict. It therefore compares equal only to
+// another `real_usd` series — reject, not reconcile.
+export const BASIS_CURRENCY = [
+  'real_2024_usd',
+  'real_2025_usd',
+  'real_usd',
+  'nominal_usd',
+  'na',
+] as const
+
+// Which energy the per-kWh (or per-W) denominator counts. Nameplate and usable capacity differ
+// by the depth-of-discharge and round-trip losses of the system; AC and DC differ by the
+// inverter. Comparing a cost per usable kWh against a bar declared per nameplate kWh answers
+// the viability question wrong by exactly that ratio, silently.
+export const ENERGY_BASIS = ['nameplate', 'usable', 'AC', 'DC', 'na'] as const
+
+// Storage duration the per-kWh price refers to. A 4h system and a 2h system have materially
+// different $/kWh because the power electronics amortise over more energy; `blended` is a
+// mixed-duration fleet average and is comparable to neither on its own.
+export const DURATION = ['4h', '2h', 'blended', 'na'] as const
+
 // How a metric observation was produced. Keeps grounded numbers separable from generated
 // ones: `curated` = hand-entered from a cited report, `feed` = pulled programmatically,
 // `llm` = emitted by the reassess pass.
 export const OBSERVATION_METHOD = ['curated', 'feed', 'llm'] as const
+
+// What kind of thing a reference entity is. All four are in the vocabulary now but only
+// 'technology' is seeded, so admitting an "EV charging network" later is a data change rather
+// than a migration -- which is the point of modelling the link for the role instead of the
+// type.
+export const ENTITY_KIND = ['technology', 'infrastructure', 'market', 'policy'] as const
 
 // How one dependency causes another. IRENA attributes US/German solar LCOE at ~2x China's
 // to permitting/interconnection/balance-of-system — so interconnection partly `drives` solar
@@ -169,6 +203,26 @@ export const BASELINE_STATUS = [
   'ok',
   'baseline_equals_threshold',
   'baseline_past_threshold',
+] as const
+
+// What we can and cannot say about a blocker (P3). These are five DIFFERENT answers and
+// must never collapse into one blank: a null that could mean either "we have no data" or
+// "we judged it and it hasn't crossed" leaves the user unable to tell a gap from a verdict.
+// `no_blocker_data` is the most valuable of them — it is where the user's own knowledge
+// does the work the data can't.
+//
+// Emitted by the series_status / dependency_status / company_dependency_status views, not
+// stored: a stored label would be a second source of truth. Listed here as the vocabulary
+// of record, so downstream code can name the states without re-deriving them from SQL.
+export const ABSENCE_STATE = [
+  'no_blocker_data',
+  'no_threshold',
+  'undetermined',
+  'assessed_not_viable',
+  'assessed_viable',
+  // Structural, not a gap: the blocker is non-measurable ("public trust") and will never
+  // have a curve. Fully expressible only after the technology/dependency split (B2).
+  'qualitative_blocker',
 ] as const
 
 // step1: structured company info + challenges extracted from a single article.

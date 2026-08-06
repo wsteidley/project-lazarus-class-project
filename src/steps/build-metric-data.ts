@@ -202,12 +202,10 @@ const main = async (): Promise<void> => {
   report('irena-rpgc', irenaRpgc.observations)
   observations.push(...irenaRpgc.observations.rows)
   unparsed.push(...irenaRpgc.observations.unparsed)
-  // Named, not just counted: these rows are valid data with nowhere to live until the
-  // technology/dependency split lands, and a bare "excluded: 100" would read as a filter
-  // working rather than as a queue of held findings.
-  for (const [subject, count] of [...irenaRpgc.held].sort()) {
-    console.log(`    held for technology/dependency split: ${subject} (${count} rows)`)
-  }
+  // The 'held for technology/dependency split' queue used to be reported here: 120 valid rows
+  // across CSP, hydro, geothermal, bioenergy and offshore wind that had nowhere to live while
+  // metric data was keyed on dependencies. The split gave them entities of their own, so there
+  // is nothing left to hold.
 
   // Wind's Wright-fittable cost curve, read straight from the committed .xlsx. Wind LCOE
   // above is the viability series and is deliberately never fitted; this is the hardware

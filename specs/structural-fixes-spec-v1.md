@@ -111,9 +111,43 @@ the gap-typology view classifies** — see `gap-typology-spec-v1.md`.
 | C | P4 — viability calls are tagged/inspectable/trustworthy |
 | D | P2 — non-measurable blockers still get their company included |
 
+## Amendment (2026-08-04, on build): the order is A → B1 → C → D → B2
+
+**B has two grains and only one survives D.** The company × dependency grain is keyed
+`(company_id, dependency_id)` and is unaffected by the split; the *series* grain is
+re-keyed `dependency_id` → `entity_id` by D, and `qualitative_blocker` is *defined* by D
+(link-absence). Writing that SQL against the old key and rewriting it a stage later is
+wasted work in the most delicate views in the repo.
+
+- **B1** (straight after A) builds the company × dependency grain — the one the user
+  actually queries ("show me companies whose blocker we have no data on"), and where A's
+  fix first becomes visible.
+- **B2** (after D) re-keys the series grain onto `entity_id` and makes
+  `qualitative_blocker` structural.
+
+The rationale in "Why this ordering" is untouched: inclusion first, gaps nameable second,
+comparisons basis-safe third, non-measurable blockers fourth. Only the *series* half of B
+defers, for exactly the reason the spec gives for putting D last.
+
+**Correction: the held rows are 120, not 121.** Geothermal LCOE carries 15 points, not 16
+— 2011 is absent from the published IRENA series. Asserted in `metric-data.test.ts`.
+
+## Resolved on build (2026-08-04)
+- **P2 audit → one real defect, fixed.** No company was dropped anywhere for lack of
+  metric/threshold/viability data. `config.processingLimit` is a volume cap, not a quality
+  gate. The one violation was a level down: `build-db` discarded `company_dependencies`
+  rows whose name matched nothing canonical, into an anonymous skip counter. They are now
+  retained with a null `dependency_id`, their raw text, and `resolution_status`.
+- **The five absence states → derived views, not stored columns.** Every input is
+  recomputed each build, so a stored label would be a second source of truth that goes
+  stale the moment `data/derived` is regenerated. Three views, ascending grain:
+  `series_status` → `dependency_status` → `company_dependency_status`.
+- **Basis reconciliation → REJECT, not reconcile.** `real_usd` (BNEF pack price, vintage
+  unstated by the publisher) stays its own basis and compares equal only to another
+  `real_usd`. Promoting it to a year would launder an assumption into a viability verdict.
+  Enforced by an equality join plus a build-time throw (`lib/basis.ts`).
+
 ## Still open (carried)
-- P2 audit: confirm the exact load-path points to change (investigation, then fix).
-- The five absence states — are they stored columns, a derived status view, or both?
-  (Lean: derived view over stored facts, same tier as progress/trajectory.)
-- Basis reconciliation for series in different currency vintages (wind TIC `real_2025`
-  vs any older bar) — the enforcement will surface these; decide reconcile-vs-reject.
+- `search_coverage` is built but **seeded empty**, so every companyless region reads
+  `unsampled` and `white_space` is currently unreachable outside tests. Filling it in is a
+  curation task: what was actually swept, and from which source.

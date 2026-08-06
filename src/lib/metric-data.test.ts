@@ -1,5 +1,6 @@
 import { DatabaseSync } from 'node:sqlite'
 import { beforeAll, describe, expect, it } from 'vitest'
+import { findBasisMismatches } from './basis.js'
 import { readCsv } from './csv.js'
 import { createTablesSql } from './db-schema.js'
 import { curatedFile, derivedFile } from './paths.js'
@@ -37,11 +38,29 @@ const loadFixture = async () => {
     dependencyId.set(row.name ?? '', Number(info.lastInsertRowid))
   }
 
+  // Post-split: metric data hangs off entities, and reaches a dependency's bar through the link.
+  const entityId = new Map<string, number>()
+  for (const row of await readCsv(curatedFile('reference_entities.csv'))) {
+    const info = database
+      .prepare('INSERT INTO reference_entities (name, kind) VALUES (?, ?)')
+      .run(row.name ?? '', row.kind ?? 'technology')
+    entityId.set(row.name ?? '', Number(info.lastInsertRowid))
+  }
+  for (const row of await readCsv(curatedFile('dependency_links.csv'))) {
+    const id = entityId.get(row.entity_name ?? '')
+    if (id === undefined || !dependencyId.has(row.dependency_name ?? '')) {
+      continue
+    }
+    database
+      .prepare('INSERT INTO dependency_links (dependency_name, entity_id, era) VALUES (?, ?, ?)')
+      .run(row.dependency_name ?? '', id, row.era || null)
+  }
+
   const insertThreshold = database.prepare(
     `INSERT OR IGNORE INTO dependency_thresholds
        (dependency_id, metric, scope, threshold_value, threshold_direction, policy_dependent,
-        baseline_value)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        baseline_value, basis, energy_basis, duration)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   )
   for (const row of await readCsv(curatedFile('dependency_thresholds.csv'))) {
     const id = dependencyId.get(row.dependency_name ?? '')
@@ -56,16 +75,23 @@ const loadFixture = async () => {
       row.threshold_direction ?? '',
       Number(row.policy_dependent ?? 0),
       row.baseline_value ? Number(row.baseline_value) : null,
+      // The bar's basis triple is now part of the progress join, so the fixture has to carry
+      // it or every bar defaults to na/na/na, joins nothing, and every assertion below goes
+      // silently empty.
+      row.basis || 'na',
+      row.energy_basis || 'na',
+      row.duration || 'na',
     )
   }
 
   const insertObservation = database.prepare(
     `INSERT INTO metric_observations
-       (dependency_id, metric, value, unit, basis, segment, as_of, scope, method)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (entity_id, metric, value, unit, basis, energy_basis, duration, segment, as_of,
+        scope, method)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   )
   for (const row of await readCsv(derivedFile('metric_observations_full.csv'))) {
-    const id = dependencyId.get(row.dependency_name ?? '')
+    const id = entityId.get(row.entity_name ?? '')
     if (id === undefined) {
       continue
     }
@@ -74,7 +100,9 @@ const loadFixture = async () => {
       row.metric ?? '',
       Number(row.value),
       row.unit ?? '',
-      row.basis ?? '',
+      row.basis || 'na',
+      row.energy_basis || 'na',
+      row.duration || 'na',
       row.segment || 'all',
       row.as_of ?? '',
       row.scope ?? '',
@@ -84,11 +112,12 @@ const loadFixture = async () => {
 
   const insertCapacity = database.prepare(
     `INSERT INTO capacity_series
-       (dependency_id, metric, value, unit, basis, as_of, scope, scenario, method)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (entity_id, metric, value, unit, basis, energy_basis, duration, segment, as_of,
+        scope, scenario, method)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   )
   for (const row of await readCsv(derivedFile('capacity_series.csv'))) {
-    const id = dependencyId.get(row.technology ?? '')
+    const id = entityId.get(row.entity_name ?? '')
     if (id === undefined) {
       continue
     }
@@ -97,7 +126,10 @@ const loadFixture = async () => {
       row.metric ?? '',
       Number(row.value),
       row.unit ?? '',
-      row.basis ?? '',
+      row.basis || 'na',
+      row.energy_basis || 'na',
+      row.duration || 'na',
+      row.segment || 'all',
       row.as_of ?? '',
       row.scope ?? '',
       row.scenario ?? 'historical',
@@ -111,35 +143,38 @@ const loadFixture = async () => {
 
   // Same assembly build-db does: group the progress rows into series, attach each one's
   // capacity axis, fit.
-  const capacityByDependency = new Map<number, SeriesPoint[]>()
+  const capacityByEntity = new Map<number, SeriesPoint[]>()
   for (const row of database
     .prepare(
-      `SELECT dependency_id, as_of, value FROM capacity_series
+      `SELECT entity_id, as_of, value FROM capacity_series
        WHERE scenario = 'historical' AND value IS NOT NULL`,
     )
-    .all() as { dependency_id: number; as_of: string; value: number }[]) {
-    const list = capacityByDependency.get(row.dependency_id) ?? []
+    .all() as { entity_id: number; as_of: string; value: number }[]) {
+    const list = capacityByEntity.get(row.entity_id) ?? []
     list.push({ as_of: row.as_of, value: row.value })
-    capacityByDependency.set(row.dependency_id, list)
+    capacityByEntity.set(row.entity_id, list)
   }
   const series = new Map<string, WrightSeries>()
   for (const row of database
     .prepare(
-      `SELECT o.dependency_id, o.metric, o.scope, o.segment, o.as_of, o.value AS value_raw,
+      `SELECT o.entity_id, o.metric, o.scope, o.segment, o.as_of, o.value AS value_raw,
               t.threshold_direction AS direction,
               t.threshold_value AS threshold,
               COALESCE(t.baseline_value, FIRST_VALUE(o.value) OVER (
-                PARTITION BY o.dependency_id, o.metric, o.segment, o.scope ORDER BY o.as_of
+                PARTITION BY o.entity_id, o.metric, o.segment, o.scope ORDER BY o.as_of
               )) AS baseline
        FROM metric_observations o
+       LEFT JOIN dependency_links dl ON dl.entity_id = o.entity_id
+       LEFT JOIN dependencies d      ON d.name = dl.dependency_name
        LEFT JOIN dependency_thresholds t
-         ON t.dependency_id = o.dependency_id AND t.metric = o.metric AND t.scope = o.scope
+         ON t.dependency_id = d.id AND t.metric = o.metric AND t.scope = o.scope
         AND t.threshold_value IS NOT NULL
+        AND t.basis = o.basis AND t.energy_basis = o.energy_basis AND t.duration = o.duration
        WHERE o.value IS NOT NULL
-         AND o.dependency_id IN (SELECT DISTINCT dependency_id FROM capacity_series)`,
+         AND o.entity_id IN (SELECT DISTINCT entity_id FROM capacity_series)`,
     )
     .all() as {
-    dependency_id: number
+    entity_id: number
     metric: string
     scope: string
     segment: string
@@ -149,14 +184,14 @@ const loadFixture = async () => {
     as_of: string
     value_raw: number
   }[]) {
-    const key = `${row.dependency_id}::${row.metric}::${row.segment}::${row.scope}`
+    const key = `${row.entity_id}::${row.metric}::${row.segment}::${row.scope}`
     const existing = series.get(key)
     if (existing) {
       existing.costPoints.push({ as_of: row.as_of, value: row.value_raw })
       continue
     }
     series.set(key, {
-      dependency_id: row.dependency_id,
+      entity_id: row.entity_id,
       metric: row.metric,
       scope: row.scope,
       segment: row.segment,
@@ -164,20 +199,24 @@ const loadFixture = async () => {
       baseline: row.baseline,
       threshold: row.threshold,
       costPoints: [{ as_of: row.as_of, value: row.value_raw }],
-      capacityPoints: capacityByDependency.get(row.dependency_id) ?? [],
+      capacityPoints: capacityByEntity.get(row.entity_id) ?? [],
     })
   }
 
   return { database, fits: computeWrightProjections([...series.values()]).fits }
 }
 
-const trajectoryFor = (metric: string): TrajectoryRow[] =>
+// Takes the ENTITY as well as the metric. Post-split 'LCOE' spans seven technologies, so the
+// old metric-only lookup would have returned whichever sorted first and quietly asserted the
+// wrong technology's numbers.
+const trajectoryFor = (entityName: string, metric: string): TrajectoryRow[] =>
   db
     .prepare(
-      `SELECT metric, segment, state, currently_crossed, became_viable_date, n_obs
-       FROM trajectory WHERE metric = ? ORDER BY segment`,
+      `SELECT t.metric, t.segment, t.state, t.currently_crossed, t.became_viable_date, t.n_obs
+       FROM trajectory t JOIN reference_entities e ON e.id = t.entity_id
+       WHERE e.name = ? AND t.metric = ? ORDER BY t.segment`,
     )
-    .all(metric) as TrajectoryRow[]
+    .all(entityName, metric) as TrajectoryRow[]
 
 beforeAll(async () => {
   const loaded = await loadFixture()
@@ -187,7 +226,7 @@ beforeAll(async () => {
 
 describe('committed metric data', () => {
   it('loads the full IRENA onshore wind LCOE series, not the two hand-entered anchors', () => {
-    const [wind] = trajectoryFor('LCOE')
+    const [wind] = trajectoryFor('Onshore wind', 'LCOE')
     expect(wind?.n_obs).toBe(16)
     expect(wind?.segment).toBe('onshore')
   })
@@ -195,13 +234,13 @@ describe('committed metric data', () => {
   // The finding that reframes this whole load: wind did not need a forecast, it needed a
   // history. It crossed 50 USD/MWh in 2019 and has stayed under it since.
   it('dates the onshore wind crossing to 2019 from real data', () => {
-    const [wind] = trajectoryFor('LCOE')
+    const [wind] = trajectoryFor('Onshore wind', 'LCOE')
     expect(wind?.currently_crossed).toBe(1)
     expect(wind?.became_viable_date).toBe('2019-12')
   })
 
   it('dates the battery crossing to 2025 against the 150 USD/kWh bar', () => {
-    const [battery] = trajectoryFor('battery_installed_cost')
+    const [battery] = trajectoryFor('Lithium-ion battery cost', 'battery_installed_cost')
     expect(battery?.n_obs).toBe(16)
     expect(battery?.currently_crossed).toBe(1)
     expect(battery?.became_viable_date).toBe('2025-12')
@@ -211,7 +250,7 @@ describe('committed metric data', () => {
   // 'battery pack price', but every observation used to say 'battery pack price (BEV)' etc,
   // so this dependency had a bar, ten observations, and zero progress rows.
   it('joins the battery pack bar to its observations now the slice lives in segment', () => {
-    const packs = trajectoryFor('battery pack price')
+    const packs = trajectoryFor('Lithium-ion battery cost', 'battery pack price')
     expect(packs.map((row) => row.segment)).toEqual(['all', 'bev', 'stationary'])
     // The all-segment average is still above $100; the BEV and stationary slices are below it.
     expect(packs.find((row) => row.segment === 'all')?.currently_crossed).toBe(0)
@@ -219,7 +258,7 @@ describe('committed metric data', () => {
   })
 
   it('keeps each pack slice on its own trajectory rather than merging them', () => {
-    const packs = trajectoryFor('battery pack price')
+    const packs = trajectoryFor('Lithium-ion battery cost', 'battery pack price')
     // 7 all-segment points, 2 BEV, 1 stationary — if segment were not in the partition key
     // these would collapse into one 10-point series.
     expect(packs.map((row) => row.n_obs)).toEqual([7, 2, 1])
@@ -257,8 +296,9 @@ describe('committed metric data', () => {
   it('loads the wind installed-cost series from Fig 2.3, 2010–2025', () => {
     const rows = db
       .prepare(
-        `SELECT COUNT(*) AS n, MIN(as_of) AS first, MAX(as_of) AS last, MIN(segment) AS segment
-         FROM metric_observations WHERE metric = 'total_installed_cost'`,
+        `SELECT COUNT(*) AS n, MIN(o.as_of) AS first, MAX(o.as_of) AS last, MIN(o.segment) AS segment
+         FROM metric_observations o JOIN reference_entities e ON e.id = o.entity_id
+         WHERE o.metric = 'total_installed_cost' AND e.name = 'Onshore wind'`,
       )
       .get() as { n: number; first: string; last: string; segment: string }
     expect(rows).toMatchObject({ n: 16, first: '2010-12', last: '2025-12', segment: 'onshore' })
@@ -286,6 +326,149 @@ describe('committed metric data', () => {
     expect(bar.n).toBe(0)
     expect(fits.find((fit) => fit.metric === 'total_installed_cost')).toBeDefined()
     // No bar means no crossing and no trajectory row — correct, not a gap.
-    expect(trajectoryFor('total_installed_cost')).toEqual([])
+    expect(trajectoryFor('Onshore wind', 'total_installed_cost')).toEqual([])
+  })
+})
+
+// P3 over the real curated set, not synthetic fixtures. The committed data already contains
+// live instances of three of the five states, so these assertions are about what the project
+// actually knows and doesn't.
+describe('absence states over the committed data', () => {
+  it('labels every curated dependency, never leaving a bare null', () => {
+    const nulls = db
+      .prepare('SELECT COUNT(*) AS n FROM dependency_status WHERE status IS NULL')
+      .get() as {
+      n: number
+    }
+    expect(nulls.n).toBe(0)
+    // And every dependency in the seed gets a row — none falls out of the roll-up.
+    const [deps, statuses] = [
+      db.prepare('SELECT COUNT(*) AS n FROM dependencies').get() as { n: number },
+      db.prepare('SELECT COUNT(*) AS n FROM dependency_status').get() as { n: number },
+    ]
+    expect(statuses.n).toBe(deps.n)
+  })
+
+  it('names the bars that have no series to judge no_blocker_data', () => {
+    const statusOf = (name: string): string =>
+      (
+        db.prepare('SELECT status FROM dependency_status WHERE dependency_name = ?').get(name) as {
+          status: string
+        }
+      )?.status
+
+    // Both carry a curated bar and zero observations — a curation gap that is now queryable
+    // rather than an empty join nobody could see.
+    expect(statusOf('Permitting timelines')).toBe('no_blocker_data')
+    expect(statusOf('Consumer willingness to pay green premium')).toBe('no_blocker_data')
+  })
+
+  // P4: a viability call that cannot say what it was judged against is a bug. Every progress
+  // row carries its full basis triple, so a user can look at a "not viable" and disagree with
+  // the measurement rather than only with the verdict.
+  it('carries the full basis triple on every progress row', () => {
+    const bare = db
+      .prepare(
+        `SELECT COUNT(*) AS n FROM progress
+         WHERE basis IS NULL OR energy_basis IS NULL OR duration IS NULL`,
+      )
+      .get() as { n: number }
+    expect(bare.n).toBe(0)
+  })
+
+  // The committed bars and their series agree on all three axes — which is what lets the
+  // build-time checker stay silent. If a future curation breaks that, the build fails rather
+  // than quietly producing zero progress rows that read as "no data".
+  it('has no basis mismatch between any committed bar and its series', async () => {
+    // Bars reach their series through the link, same as the loader does.
+    const entityFor = new Map(
+      (await readCsv(curatedFile('dependency_links.csv'))).map((row) => [
+        row.dependency_name ?? '',
+        row.entity_name ?? '',
+      ]),
+    )
+    const bars = (await readCsv(curatedFile('dependency_thresholds.csv')))
+      .filter((row) => entityFor.has(row.dependency_name ?? ''))
+      .map((row) => ({
+        dependency_name: row.dependency_name ?? '',
+        entity_name: entityFor.get(row.dependency_name ?? '') ?? '',
+        metric: row.metric ?? '',
+        scope: row.scope ?? '',
+        basis: row.basis || 'na',
+        energy_basis: row.energy_basis || 'na',
+        duration: row.duration || 'na',
+      }))
+    const observations = await readCsv(derivedFile('metric_observations_full.csv'))
+    expect(findBasisMismatches(bars, observations)).toEqual([])
+  })
+
+  // The battery bar is the one the enforcement was written for: IRENA quotes per USABLE kWh
+  // over a blended-duration fleet, and those qualifiers used to live in a note string where
+  // nothing could act on them.
+  it('declares the battery bar on usable kWh and blended duration', () => {
+    const row = db
+      .prepare(
+        `SELECT basis, energy_basis, duration FROM progress
+         WHERE metric = 'battery_installed_cost' LIMIT 1`,
+      )
+      .get() as { basis: string; energy_basis: string; duration: string }
+    expect(row).toEqual({ basis: 'real_2025_usd', energy_basis: 'usable', duration: 'blended' })
+  })
+
+  it('separates the wind series with a bar from the one without', () => {
+    const rows = db
+      .prepare(
+        `SELECT metric, status FROM series_status
+         WHERE entity_name = 'Onshore wind' AND metric IN ('LCOE', 'total_installed_cost')
+         ORDER BY metric`,
+      )
+      .all()
+    // LCOE crossed its 50 USD/MWh bar in 2019; installed cost has no bar at all. Two very
+    // different things to know, and the schema now says which is which.
+    expect(rows).toEqual([
+      { metric: 'LCOE', status: 'assessed_viable' },
+      { metric: 'total_installed_cost', status: 'no_threshold' },
+    ])
+  })
+
+  // The split's payoff, stated as data rather than as a row count: six of the seven published
+  // LCOE curves are now loaded and describable, and every one of them is honestly labelled as
+  // having no viability bar rather than being absent from the dataset entirely.
+  it('loads all seven IRENA LCOE technologies, six of them without a bar', () => {
+    const rows = db
+      .prepare(
+        `SELECT entity_name, status FROM series_status WHERE metric = 'LCOE'
+         ORDER BY entity_name`,
+      )
+      .all() as { entity_name: string; status: string }[]
+    expect(rows.map((row) => row.entity_name)).toEqual([
+      'Bioenergy',
+      'Concentrated solar power',
+      'Geothermal',
+      'Hydropower',
+      'Offshore wind',
+      'Onshore wind',
+      'Solar PV',
+    ])
+    // Only onshore wind has a curated bar; the rest are a curation gap, not a dead end.
+    expect(rows.filter((row) => row.status === 'no_threshold')).toHaveLength(6)
+    expect(rows.find((row) => row.entity_name === 'Onshore wind')?.status).toBe('assessed_viable')
+  })
+
+  // The series the trajectory empirical check has been blocked on: geothermal and hydro are
+  // the honest 'receded' cases (LCOE rising), and until the split they could not load at all.
+  it('gives geothermal and hydropower real loaded curves', () => {
+    const rows = db
+      .prepare(
+        `SELECT entity_name, n_obs FROM series_status
+         WHERE metric = 'LCOE' AND entity_name IN ('Geothermal', 'Hydropower')
+         ORDER BY entity_name`,
+      )
+      .all()
+    // Geothermal is 15 points, not 16 — 2011 is missing from the published series.
+    expect(rows).toEqual([
+      { entity_name: 'Geothermal', n_obs: 15 },
+      { entity_name: 'Hydropower', n_obs: 16 },
+    ])
   })
 })

@@ -9,21 +9,23 @@ import { matchCanonical } from './dependency-resolution.js'
 // non-conforming rows are *reported*, never silently dropped — a number without provenance
 // silently deciding what looks viable is exactly the failure this data exists to prevent.
 
-// A metric observation resolved against the canonical dependency list. `dependency_name`
+// A metric observation resolved against the canonical reference-entity list. `entity_name`
 // carries the canonical spelling when matched, or '' when nothing fit (kept, not dropped).
-export type ResolvedObservation = CsvRow & { dependency_name: string }
+// It resolved against DEPENDENCIES until the technology/dependency split; metric data is
+// published per technology, and pretending otherwise is what held 120 rows back.
+export type ResolvedObservation = CsvRow & { entity_name: string }
 
 export type ObservationValidation = {
   resolved: ResolvedObservation[]
-  // Rows whose dependency_name matched no canonical dependency.
+  // Rows whose entity_name matched no canonical reference entity.
   unmatched: CsvRow[]
   // curated rows missing a source_url — a curated number must be citable.
   missingSource: CsvRow[]
 }
 
-// Maps each observation onto the canonical dependency list (reusing matchCanonical, the
+// Maps each observation onto the canonical entity list (reusing matchCanonical, the
 // same case/whitespace-tolerant match step1c uses) and flags the two integrity problems
-// the spec calls out: an unresolvable dependency_name, and a curated row without a source.
+// the spec calls out: an unresolvable entity_name, and a curated row without a source.
 export const validateObservationRows = (
   rows: CsvRow[],
   canonicalNames: readonly string[],
@@ -33,14 +35,14 @@ export const validateObservationRows = (
   const missingSource: CsvRow[] = []
 
   for (const row of rows) {
-    const canonical = matchCanonical(row.dependency_name, canonicalNames)
+    const canonical = matchCanonical(row.entity_name, canonicalNames)
     if (!canonical) {
       unmatched.push(row)
     }
     if (row.method === 'curated' && !(row.source_url ?? '').trim()) {
       missingSource.push(row)
     }
-    resolved.push({ ...row, dependency_name: canonical ?? '' })
+    resolved.push({ ...row, entity_name: canonical ?? '' })
   }
 
   return { resolved, unmatched, missingSource }
@@ -110,19 +112,19 @@ export const validateThresholds = (
   return { resolved, unmatched, incomplete }
 }
 
-// Validates dependency_links.csv: both endpoints must resolve to canonical dependencies.
+// Validates dependency_edges.csv: both endpoints must resolve to canonical dependencies.
 // Returns the resolved rows (canonical spellings) and the rows with an unresolvable endpoint.
-export type ResolvedLink = {
+export type ResolvedEdge = {
   from_dependency: string
   to_dependency: string
   relation: string
   note: string
 }
-export const validateDependencyLinks = (
+export const validateDependencyEdges = (
   rows: CsvRow[],
   canonicalNames: readonly string[],
-): { resolved: ResolvedLink[]; unmatched: CsvRow[] } => {
-  const resolved: ResolvedLink[] = []
+): { resolved: ResolvedEdge[]; unmatched: CsvRow[] } => {
+  const resolved: ResolvedEdge[] = []
   const unmatched: CsvRow[] = []
   for (const row of rows) {
     const from = matchCanonical(row.from_dependency, canonicalNames)

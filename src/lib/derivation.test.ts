@@ -32,11 +32,36 @@ const addThreshold = (
   ).run(depId, metric, value, direction, extra.contested ?? 0, extra.alt ?? null)
 }
 
+// Post-split, observations hang off a reference_entity and reach the bar through
+// dependency_links. These tests are about the progress/trajectory arithmetic rather than the
+// split, so each dependency gets one entity of its own — the shape that was implicit before.
+const entityFor = new Map<number, number>()
+const entityOf = (depId: number): number => {
+  const existing = entityFor.get(depId)
+  if (existing !== undefined) {
+    return existing
+  }
+  const name = (
+    db.prepare('SELECT name FROM dependencies WHERE id = ?').get(depId) as { name: string }
+  ).name
+  const entityId = Number(
+    db
+      .prepare('INSERT INTO reference_entities (name, kind) VALUES (?, ?)')
+      .run(`${name} (entity)`, 'technology').lastInsertRowid,
+  )
+  db.prepare('INSERT INTO dependency_links (dependency_name, entity_id) VALUES (?, ?)').run(
+    name,
+    entityId,
+  )
+  entityFor.set(depId, entityId)
+  return entityId
+}
+
 const addObs = (depId: number, metric: string, value: number, asOf: string): void => {
   db.prepare(
-    `INSERT INTO metric_observations (dependency_id, metric, value, unit, as_of, scope, method)
+    `INSERT INTO metric_observations (entity_id, metric, value, unit, as_of, scope, method)
      VALUES (?, ?, ?, 'u', ?, 'global', 'curated')`,
-  ).run(depId, metric, value, asOf)
+  ).run(entityOf(depId), metric, value, asOf)
 }
 
 const trajectoryFor = (depId: number): TrajectoryRow =>
@@ -59,6 +84,7 @@ beforeEach(() => {
   db = new DatabaseSync(':memory:')
   db.exec('PRAGMA foreign_keys = ON')
   db.exec(createTablesSql())
+  entityFor.clear()
   db.prepare(
     'INSERT INTO trajectory_config (window_n, plateau_slope_threshold) VALUES (3, 0.03)',
   ).run()

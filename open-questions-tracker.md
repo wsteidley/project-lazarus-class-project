@@ -9,7 +9,7 @@ spec files. Two sections: **recently resolved** (with the ruling, so they're not
 re-litigated) and **still open** (filtered to what's actually live — stale/superseded
 questions removed). Update this instead of re-opening old specs.
 
-Last audited: 2026-08-02 (across all specs in this folder).
+Last audited: 2026-08-04 (across all specs in this folder).
 
 ---
 
@@ -89,9 +89,8 @@ window, and (via derivation) curve classification below.
 - Data structure → **star schema + lookups** (metric-data-structure-spec-v1).
 - **`basis` split into three orthogonal columns** — *decided* (2026-07-26): `basis`
   (currency), `energy_basis` (nameplate/usable, AC/DC), `duration` (4h/2h/blended).
-  Exposed by the battery reconciliation. **⚠ SPECCED, NOT IMPLEMENTED** — see Still open
-  "implement basis split + enforce threshold match". Listed here for the *decision*; the
-  build is still pending.
+  Exposed by the battery reconciliation. Listed here for the *decision*; **built 2026-08-04,
+  see R-E** (including the reject-not-reconcile ruling on currency vintages).
 - **Battery cost reconciliation** → four non-interchangeable metrics, never merged; the
   old "4h system cost 140" was mislabeled IRENA TIC, merged-with-relabel. See
   `data-derivation-map.md`.
@@ -108,28 +107,58 @@ window, and (via derivation) curve classification below.
   `wright_fits`. Consequence: with no bar there is no curated `direction` either, so a
   rising series is now rejected by the negative-slope guard rather than by its label.
 
+### R-E — The structural fixes + gap typology, built (2026-08-04)
+Specs: `structural-fixes-spec-v1.md`, `gap-typology-spec-v1.md`. Order amended on build to
+**A → B1 → C → D → B2 → gap typology** (B has two grains; only the company one survives D).
+
+- **P2 audit → one real defect, fixed.** No company is dropped anywhere for lack of metric,
+  threshold or viability data — verified across the whole load path. `processingLimit` is a
+  volume cap, not a quality gate. The violation was one level down: `build-db` discarded
+  `company_dependencies` rows that matched nothing canonical into an anonymous skip counter.
+  They are now **retained** with a null `dependency_id`, their raw text, and
+  `resolution_status`. The old "N child rows skipped" counter is now a per-table, per-reason
+  tally — P3 applied to the build log.
+- **P3 audit → the five states are derived views, not stored columns.** `series_status` →
+  `dependency_status` → `company_dependency_status`. Every input is recomputed each build, so
+  a stored label would be a second source of truth. **`progress` deliberately stays an INNER
+  JOIN:** LEFT-joining the bar would push NULL-threshold series into `trajectory`, whose
+  `currently_crossed` is `CASE … ELSE 0`, publishing an *unassessed* series as **not viable**.
+  There is a test pinning that.
+- **`basis` three-way split + enforcement → DONE.** `basis` (currency) / `energy_basis` /
+  `duration`, all `NOT NULL DEFAULT 'na'` on observations, capacity and thresholds, with
+  equality predicates in the progress join. `capacity_series` gained the `segment` column it
+  never had, and its conflated column was destructured (25 `AC`→energy_basis, 25
+  `onshore`→segment, 12 `energy`→ it was restating the unit). The IRENA battery qualifiers
+  ("usable kWh, blended duration") moved out of the `note` string into real join keys.
+- **Basis reconciliation → REJECT, not reconcile.** `real_usd` stays its own basis; BNEF does
+  not state a vintage and inventing one would launder an assumption into a verdict. Enforced
+  by `findBasisMismatches`, which **throws at build time** — the join predicate alone makes a
+  mismatch invisible (zero rows reads as "no data"), which is the P3 failure this work exists
+  to prevent. The only place the pipeline hard-fails on data.
+- **Technology/dependency split → DONE, 121 → 241 observations.** Metric tables key on
+  `entity_id` → `reference_entities`; `DEPENDENCY_ALIAS` deleted with no replacement. All
+  seven IRENA LCOE technologies load, including the geothermal/hydro `receded` series the
+  trajectory empirical check was blocked on. Existing causal `dependency_links` renamed
+  `dependency_edges`; the new dependency→entity table takes the name and carries `era` only
+  (bars stay in `dependency_thresholds` — two homes for the bar is a P4 violation).
+  `dependencies.name` and `idea_spaces.name` gained `UNIQUE`, required by the new FKs.
+- **⚠ The trajectory series key is now `(dependency_id, entity_id, metric, segment, scope)`**
+  and both id columns are load-bearing. Drop `dependency_id` and three cohorts sharing one
+  curve collapse into one series judged against the wrong bar; drop `entity_id` and a
+  dependency linked to two entities fits a line through incomparable points. Silent both
+  ways. Tested.
+- **Gap typology → DONE.** `gap_cells` / `space_cells` / `gap_map` / `company_gap_summary`.
+  `gap_cells` starts `FROM companies LEFT JOIN …` so a company with zero recorded blockers
+  still appears — building it from the pairings would have been a P2 regression hiding inside
+  the payoff view. `crossed_and_receded` kept as a distinct cell; `era` carried but unused in
+  classification.
+- **The held rows were 120, not 121** — geothermal LCOE has 15 points (2011 missing).
+
 ---
 
 ## Still open (live)
 
 ### Active work — metric data structure & thresholds
-- **Implement the `basis` three-way split** (SPECCED, not built). Code still has one
-  `basis` column; `usable kWh, blended duration` sits in a `note` string as interim.
-  Touches `types.ts`, the DDL, every extractor, and the curated CSVs. Not purely
-  additive — destructure the conflated `capacity_series` column (`AC`→`energy_basis`,
-  `onshore`→`segment`, `energy`→`unit`).
-- **Enforce the threshold basis-match rule** (baseline rule #1 — never actually been
-  true). `dependency_thresholds` has *no* basis columns; the `progress` join is on
-  `(dependency_id, metric, scope)` only — so an observation can merge onto a bar with no
-  declared basis (the battery relabel did exactly this). Must land WITH the split: add
-  `basis`/`energy_basis`/`duration` to `dependency_thresholds` AND those predicates to
-  the progress join. Only then is "mismatch is a build-time error" real.
-- **Technology / dependency split** (`technology-dependency-split-spec-v1.md`) — two
-  sub-questions still open: (a) do metric tables key directly on `technology` or on
-  `reference_entities` filtered to `kind='technology'` (same result, pick per
-  implementation simplicity); (b) is `era` on `dependency_links` a year, a range, or a
-  tie to an idea-space failure cohort (the deeper "baseline from failure era" lens).
-  The split itself is resolved; these are implementation shape.
 - **OWID solar refresh (data freshness).** The v3.2 run projected solar's crossing at
   ~2025-09 — already past, because the OWID series ends 2024-12. The fit is fine; the
   input is a year stale. Re-pull `solar-pv-prices` (and capacity) before anyone quotes a
@@ -144,24 +173,24 @@ window, and (via derivation) curve classification below.
 - **Saturation term** — log-linear vs logistic forward extrapolation, once far-future
   crossings look unrealistic. Deferred to projection-quality work.
 - **Trajectory as SQL view vs TS step** — if relative-slope classification is too noisy
-  on real series, promote to a TS fit with significance/R². *Empirical check to run now
-  that dense solar + real wind are loaded. **Note:** geothermal/hydro (the other
-  `receded` series) are held pending the technology/dependency split, so
-  **interconnection is currently the only loaded `receded` series** — the check is
-  weaker until the split lands, and may be worth reordering after it.*
+  on real series, promote to a TS fit with significance/R². *The blocker is gone: the
+  technology/dependency split loaded geothermal and hydropower, so the `receded` series the
+  check needed now exist alongside interconnection. Ready to run.*
 
-### Principle audits (from `foundational-principles.md`) — investigate, don't fix yet
-- **Inclusion gate is the company/outcome pipeline, and the bar is LOW** (P2). A company
-  enters on factual footprint alone: what it did, roughly when, sector/approach, and
-  dependencies where known. **Audit:** verify nothing in the load path drops a company for
-  *lack of* metric, threshold, or viability data. Any such drop is a P2 violation to fix.
-  The failure mode is curve-rich technologies quietly narrowing a *company* dataset into a
-  *technologies-we-have-curves-for* dataset.
-- **Absence must be distinct queryable states, not nulls** (P3). "No curve data," "no
-  threshold," "undetermined," "assessed → not viable," and "assessed → viable" are **five
-  different states**. **Audit:** can the current schema distinguish all five, or does it
-  collapse any into a bare null? Extends the existing `metric_series_status` / coverage /
-  `unsampled`-≠-`white_space` discipline to the whole dataset.
+### Follow-ups from the structural-fixes build (2026-08-04)
+- **Seed `search_coverage`.** The table is built and loaded but **empty**, so every
+  companyless region reads `unsampled` and `white_space` is unreachable outside tests. This
+  is the honest state, not a bug — but filling it in (what was actually swept, from which
+  source) is what makes the blank half of the gap map informative.
+- **`reference_entities` names are the publisher's strings**, so a few read oddly as
+  entities (`Lithium-ion battery cost`, `Electrolyzer capex`). Deliberate: renaming them
+  would mean a new alias map, which is exactly what the split deleted. Revisit as a curation
+  pass if the names reach the app layer.
+- **`era` granularity** (carried on the cell, unused in classification) — decide when real
+  multi-era dependencies exist. See `technology-dependency-split-spec-v1.md`.
+- **The 13 unlinked dependencies are the P2 payoff, and worth eyeballing.** Each is now
+  structurally `qualitative_blocker` or `no_blocker_data`; confirm the `threshold_kind`
+  labels agree with which of the two each one should be.
 
 ### Gated on measurement (don't decide yet)
 - **`FUZZY_MERGE_THRESHOLD`** + whether a mid-band queues for review — needs the

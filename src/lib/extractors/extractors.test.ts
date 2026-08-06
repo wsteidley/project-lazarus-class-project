@@ -134,11 +134,17 @@ describe('extractOwidSolarCapacity', () => {
 
   // AC vs DC is the methodology trap here: DC headline figures run ~20% higher post-2021,
   // and pairing them with the AC-consistent cost series would bend the learning rate.
-  it('declares the AC basis and rounds to two decimals', () => {
+  //
+  // AC is an ENERGY basis, not a currency. It sat in `basis` until the three-way split, which
+  // is the clearest instance of the conflation that split exists to undo -- a capacity figure
+  // has no currency vintage at all, so `basis` is correctly 'na' here.
+  it('declares AC as the energy basis, not the currency, and rounds to two decimals', () => {
     const result = extractOwidSolarCapacity(rows)
-    expect(result.rows.map((row) => [row.as_of, row.value, row.basis])).toEqual([
-      ['2000-12', '1.22', 'AC'],
-      ['2024-12', '1866.31', 'AC'],
+    expect(
+      result.rows.map((row) => [row.as_of, row.value, row.basis, row.energy_basis, row.segment]),
+    ).toEqual([
+      ['2000-12', '1.22', 'na', 'AC', 'all'],
+      ['2024-12', '1866.31', 'na', 'AC', 'all'],
     ])
     expect(result.excluded).toBe(1)
   })
@@ -155,13 +161,16 @@ describe('extractIrenaCapacity', () => {
     { year: '2024', capacity_mw: '1049778.0' },
   ]
 
-  it('converts MW to GW and declares the onshore-only basis', () => {
-    expect(extractIrenaCapacity(rows).rows.map((row) => [row.as_of, row.value, row.basis])).toEqual(
-      [
-        ['2000-12', '16.894', 'onshore'],
-        ['2024-12', '1049.778', 'onshore'],
-      ],
-    )
+  // 'onshore' names WHICH SUBSET was measured, which is a segment by definition. It lived in
+  // `basis` only because capacity_series had no segment column to put it in -- it was never a
+  // basis of any kind.
+  it('converts MW to GW and declares onshore as a segment, not a basis', () => {
+    expect(
+      extractIrenaCapacity(rows).rows.map((row) => [row.as_of, row.value, row.basis, row.segment]),
+    ).toEqual([
+      ['2000-12', '16.894', 'na', 'onshore'],
+      ['2024-12', '1049.778', 'na', 'onshore'],
+    ])
   })
 
   it('reports an unusable row rather than dropping it', () => {
@@ -177,11 +186,15 @@ describe('extractIrenaCapacity', () => {
 
 describe('cited anchors', () => {
   const anchor = (overrides: Partial<CsvRow> = {}): CsvRow => ({
-    dependency_name: 'Lithium-ion battery cost',
+    entity_name: 'Lithium-ion battery',
     metric: 'battery pack price',
     value: '108',
     unit: 'USD/kWh',
+    // BNEF does not state the vintage of its pack-price series, so real_usd stays its own
+    // basis rather than being promoted to a year we would be inventing.
     basis: 'real_usd',
+    energy_basis: 'na',
+    duration: 'na',
     segment: 'all',
     as_of: '2025-12',
     scope: 'global',
@@ -224,11 +237,15 @@ describe('cited anchors', () => {
   it('validates capacity anchors against the capacity schema', () => {
     const result = extractCapacityAnchors([
       {
-        technology: 'Lithium-ion battery cost',
+        entity_name: 'Lithium-ion battery',
         metric: 'cumulative Li-ion deployed',
         value: '3500',
         unit: 'GWh',
-        basis: 'energy',
+        // 'energy' here was just restating the unit; the split retires it.
+        basis: 'na',
+        energy_basis: 'na',
+        duration: 'na',
+        segment: 'all',
         as_of: '2024-12',
         scope: 'global',
         scenario: 'historical',
@@ -246,27 +263,27 @@ describe('cited anchors', () => {
 describe('deterministic ordering', () => {
   // The rebuild-and-diff audit only works if row order is a function of the data, never
   // of the order extractors happened to run in.
-  it('sorts observations by dependency, metric, scope, then date', () => {
+  it('sorts observations by entity, metric, scope, then date', () => {
     const rows = sortObservations([
-      { dependency_name: 'B', metric: 'm', scope: 'global', as_of: '2020-12' },
-      { dependency_name: 'A', metric: 'm', scope: 'US', as_of: '2019-12' },
-      { dependency_name: 'A', metric: 'm', scope: 'US', as_of: '2018-12' },
+      { entity_name: 'B', metric: 'm', scope: 'global', as_of: '2020-12' },
+      { entity_name: 'A', metric: 'm', scope: 'US', as_of: '2019-12' },
+      { entity_name: 'A', metric: 'm', scope: 'US', as_of: '2018-12' },
       // biome-ignore lint/suspicious/noExplicitAny: partial rows are enough to test ordering
     ] as any)
-    expect(rows.map((row) => [row.dependency_name, row.as_of])).toEqual([
+    expect(rows.map((row) => [row.entity_name, row.as_of])).toEqual([
       ['A', '2018-12'],
       ['A', '2019-12'],
       ['B', '2020-12'],
     ])
   })
 
-  it('sorts capacity by technology, metric, scope, then date', () => {
+  it('sorts capacity by entity, metric, scope, then date', () => {
     const rows = sortCapacity([
-      { technology: 'Solar', metric: 'm', scope: 'global', as_of: '2024-12' },
-      { technology: 'Onshore', metric: 'm', scope: 'global', as_of: '2000-12' },
+      { entity_name: 'Solar', metric: 'm', scope: 'global', as_of: '2024-12' },
+      { entity_name: 'Onshore', metric: 'm', scope: 'global', as_of: '2000-12' },
       // biome-ignore lint/suspicious/noExplicitAny: partial rows are enough to test ordering
     ] as any)
-    expect(rows.map((row) => row.technology)).toEqual(['Onshore', 'Solar'])
+    expect(rows.map((row) => row.entity_name)).toEqual(['Onshore', 'Solar'])
   })
 })
 
@@ -287,29 +304,32 @@ const irenaRow = (overrides: Partial<CsvRow>): CsvRow => ({
 })
 
 describe('extractIrenaRpgc', () => {
-  it('aliases a technology onto the dependency the loader resolves through', () => {
+  it('carries the published technology through as the entity name', () => {
     const { observations } = extractIrenaRpgc([irenaRow({})])
     expect(observations.rows[0]).toMatchObject({
-      dependency_name: 'Onshore wind LCOE',
+      entity_name: 'Onshore wind',
       metric: 'LCOE',
       segment: 'onshore',
       value: '32.95',
     })
   })
 
-  // The five orphan technologies. They are valid data with no dependency to hang off yet, and
-  // metric_observations.dependency_id is NOT NULL — so they must be held and NAMED, never
-  // dropped quietly and never forced in by inventing a dependency.
-  it('holds a technology with no dependency, counted by subject rather than dropped', () => {
-    const { observations, held } = extractIrenaRpgc([
+  // The five orphan technologies. These used to be HELD — 120 valid rows with nowhere to live,
+  // because metric_observations.dependency_id was NOT NULL and no dependency named them. The
+  // split gave them entities of their own, so they now load like any other technology and
+  // whether a dependency hangs off them is a separate question.
+  it('loads a technology that no dependency names, instead of holding it back', () => {
+    const { observations } = extractIrenaRpgc([
       irenaRow({ technology: 'Geothermal', segment: 'all' }),
       irenaRow({ technology: 'Geothermal', segment: 'all', as_of: '2024-12' }),
       irenaRow({ technology: 'Hydropower', segment: 'all' }),
     ])
-    expect(observations.rows).toEqual([])
-    expect(observations.excluded).toBe(3)
-    expect(held.get('Geothermal / LCOE')).toBe(2)
-    expect(held.get('Hydropower / LCOE')).toBe(1)
+    expect(observations.rows.map((row) => row.entity_name)).toEqual([
+      'Geothermal',
+      'Geothermal',
+      'Hydropower',
+    ])
+    expect(observations.excluded).toBe(0)
   })
 
   // 'Global' and 'global' would otherwise become two series, and the one that no threshold
@@ -333,7 +353,7 @@ describe('extractIrenaRpgc', () => {
   it('cumulates BESS additions into a capacity series and never stores the raw flow', () => {
     const additions = ['2.02', '2.24', '2.99'].map((value, index) =>
       irenaRow({
-        technology: 'Lithium-ion battery cost',
+        entity_name: 'Lithium-ion battery',
         metric: 'bess_additions',
         value,
         unit: 'GWh',
@@ -351,7 +371,7 @@ describe('extractIrenaRpgc', () => {
       ['2016-12', '4.26'],
       ['2017-12', '7.25'],
     ])
-    expect(capacity.rows[0]?.technology).toBe('Utility-scale battery system')
+    expect(capacity.rows[0]?.entity_name).toBe('Lithium-ion battery cost')
     // The truncation biases the learning rate, so it has to travel with the data.
     expect(capacity.rows[0]?.note).toContain('EXCLUDED')
   })
@@ -359,7 +379,7 @@ describe('extractIrenaRpgc', () => {
   it('stamps the battery series with what IRENA actually measured', () => {
     const { observations } = extractIrenaRpgc([
       irenaRow({
-        technology: 'Lithium-ion battery cost',
+        entity_name: 'Lithium-ion battery',
         metric: 'battery_installed_cost',
         value: '140.45',
         unit: 'USD/kWh',
@@ -367,9 +387,22 @@ describe('extractIrenaRpgc', () => {
       }),
     ])
     // Four battery cost definitions span $70-140/kWh for the same year; an unlabelled row is
-    // how they get spliced into one curve.
-    expect(observations.rows[0]?.note).toContain('usable kWh')
-    expect(observations.rows[0]?.note).toContain('blended duration')
+    // how they get spliced into one curve. The two measurement qualifiers used to ride in the
+    // note because there were no columns for them -- now they are join keys, so a bar declared
+    // per nameplate kWh or on a straight 4h system cannot silently match these rows.
+    expect(observations.rows[0]).toMatchObject({
+      energy_basis: 'usable',
+      duration: 'blended',
+    })
+    // What stays in the note is provenance rather than a misfiled column.
+    expect(observations.rows[0]?.note).toContain('not interchangeable')
+  })
+
+  it('leaves the energy axes na on the metrics that have neither', () => {
+    const { observations } = extractIrenaRpgc([
+      irenaRow({ technology: 'Onshore wind', metric: 'LCOE', value: '33', unit: 'USD/MWh' }),
+    ])
+    expect(observations.rows[0]).toMatchObject({ energy_basis: 'na', duration: 'na' })
   })
 
   it('rejects a row with no citation', () => {
@@ -385,7 +418,7 @@ describe('extractIrenaTic', () => {
   it('stamps the wind installed-cost series with its own basis and segment', () => {
     const { rows } = extractIrenaTic([scratch('2010', '2380.8642270915807')])
     expect(rows[0]).toMatchObject({
-      dependency_name: 'Onshore wind LCOE',
+      entity_name: 'Onshore wind',
       metric: 'total_installed_cost',
       unit: 'USD/kW',
       basis: 'real_2025_usd',

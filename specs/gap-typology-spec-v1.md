@@ -99,12 +99,32 @@ The view exists to be filtered, joined, and combined with the user's own judgmen
   with company death-years overlaid" plot reads directly off this view + the metric
   series.
 
+## Resolved on build (2026-08-04)
+
+- **`crossed_and_receded` stays a distinct cell.** It falls out of the SQL for free
+  (`first_viable_date IS NOT NULL AND any_crossed = 0`) and it is a genuinely different
+  answer from `lazarus_candidate`: the window opened *and closed*. Collapsing it into a
+  flag would make the headline filter lie — a user filtering for revivable ideas would be
+  handed one that is no longer viable.
+- **`white_space` requires an explicit coverage record.** A `search_coverage` table
+  (`idea_space_name`, `dependency_name` nullable for a whole-space sweep, `searched_on`,
+  `source`, `method`) is built and loaded. `unsampled` is the DEFAULT; a cell becomes
+  `white_space` only where a row confirms someone looked. **Seeded empty today**, so every
+  companyless region currently reads `unsampled` — the honest answer, and the one the
+  `absence is signal` principle asks for.
+- **`era` is carried, not used.** `lazarus_candidate` compares `became_viable_date` to
+  `companies.year_defunct` — a fact about the company rather than a curated slice. The
+  era rides on the cell for inspection; revisit when real multi-era dependencies exist.
+- **Roll-up is strongest-signal + a count per state.** `company_gap_summary` carries both,
+  so "must not hide the others" is structural rather than a convention. The ranking puts
+  `no_blocker_data` ABOVE the weak classified cells: the spec calls it the highest-value
+  gap, so a company with one dead end and one unknown surfaces as the unknown.
+- **Cell grain is company × dependency**, with one representative series chosen per
+  dependency (`dependency_signal`) — crossed first, then earliest crossing, i.e. the
+  reading most favourable to the Lazarus finding. Per-series detail stays in `trajectory`.
+
 ## Still open
-- `crossed_and_receded` — new cell (battery-style backslide-after-crossing); confirm it's
-  worth a distinct cell vs. a flag on `lazarus_candidate`.
-- Company-level roll-up rule — strongest-signal-wins is a start; may want a richer summary
-  once real multi-dependency companies are loaded.
-- Whether `white_space` requires an explicit coverage record per (idea × dependency) cell,
-  or is inferred — leans explicit, per the `unsampled` caution.
-- The `era` on `dependency_links` (from D) drives the crossing-vs-death comparison — its
-  granularity (year vs range vs cohort) affects `lazarus_candidate` precision.
+- Seeding `search_coverage` honestly — what the corpus actually swept, and from where.
+  Until then `white_space` is unreachable outside tests.
+- Company-level roll-up may want a richer summary once real multi-dependency companies are
+  loaded; strongest-signal-plus-counts is the starting point.

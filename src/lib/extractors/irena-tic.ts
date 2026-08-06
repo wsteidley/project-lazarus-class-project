@@ -24,7 +24,7 @@ import { type ExtractResult, fixed, type ObservationRow, yearAsOf } from './type
 // already hangs off this row. A separate dependency would be orphaned from its own x-axis.
 // The naming mismatch (an LCOE-named dependency holding a capex metric) dissolves when the
 // technology/dependency split lands.
-export const DEPENDENCY_NAME = 'Onshore wind LCOE'
+export const ENTITY_NAME = 'Onshore wind'
 export const METRIC = 'total_installed_cost'
 export const UNIT = 'USD/kW'
 
@@ -32,6 +32,9 @@ export const UNIT = 'USD/kW'
 // side refuses a workbook that isn't denominated in 2025 dollars, so this stamp cannot
 // silently disagree with the source.
 export const BASIS = 'real_2025_usd'
+// A per-kW installed cost has no energy denominator and no duration.
+export const ENERGY_BASIS = 'na'
+export const DURATION = 'na'
 
 // Onshore only -- offshore has its own cost curve and its own learning rate, and the
 // capacity axis this pairs with is onshore-only for the same reason.
@@ -77,11 +80,13 @@ export const extractIrenaTic = (rows: CsvRow[]): ExtractResult<ObservationRow> =
   const latestYear = points[points.length - 1]?.year
 
   const observations = points.map<ObservationRow>((point) => ({
-    dependency_name: DEPENDENCY_NAME,
+    entity_name: ENTITY_NAME,
     metric: METRIC,
     value: fixed(point.cost, PRECISION),
     unit: UNIT,
     basis: BASIS,
+    energy_basis: ENERGY_BASIS,
+    duration: DURATION,
     segment: SEGMENT,
     as_of: yearAsOf(point.year),
     scope: 'global',

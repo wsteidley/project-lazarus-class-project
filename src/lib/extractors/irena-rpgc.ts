@@ -27,21 +27,16 @@ import {
 
 const AS_OF = /^\d{4}-\d{2}$/
 
-// (technology, metric) -> the canonical dependency the row loads against.
+// DEPENDENCY_ALIAS used to sit here: a three-entry (technology, metric) -> dependency map that
+// bridged IRENA's per-technology publishing onto a loader that resolved through
+// dependencies.name. Every technology it did not name -- CSP, hydro, geothermal, bioenergy,
+// offshore wind -- had all 120 of its rows held back, because metric_observations.dependency_id
+// was a NOT NULL foreign key and there was no dependency to point at.
 //
-// Metric data is published per TECHNOLOGY ('Onshore wind'); the loader still resolves through
-// dependencies.name ('Onshore wind LCOE'). This alias bridges the two until the
-// technology/dependency split lands, at which point it is DELETED, not extended -- see
-// specs/technology-dependency-split-spec-v1.md. Deliberately keyed on the pair, because one
-// technology's metrics can belong to different dependencies.
-const DEPENDENCY_ALIAS = new Map<string, string>([
-  ['Onshore wind::LCOE', 'Onshore wind LCOE'],
-  ['Lithium-ion battery cost::battery_installed_cost', 'Utility-scale battery system'],
-  ['Lithium-ion battery cost::bess_additions', 'Utility-scale battery system'],
-])
-
-const aliasKey = (technology: string, metric: string): string => `${technology}::${metric}`
-
+// The technology/dependency split retired it, exactly as its own comment promised (deleted,
+// not extended). Rows now carry the published technology name straight through as entity_name,
+// and whether any dependency hangs off that entity is a separate question answered by
+// dependency_links.
 // Published scope label -> the canonical scope value. Two separate problems:
 //   1. casing -- the extended file writes 'global' in most rows but 'Global' in the market-LCOE
 //      rows. scope is part of the series key in progress, trajectory, the Wright input query and
@@ -101,18 +96,14 @@ const validate = (row: CsvRow): string | null => {
 export type IrenaResult = {
   observations: ExtractResult<ObservationRow>
   capacity: ExtractResult<CapacityRow>
-  // Rows held back because their technology has no dependency yet, tallied per technology so
-  // the build log names what is waiting rather than just counting it.
-  held: Map<string, number>
 }
 
 export const extractIrenaRpgc = (rows: CsvRow[]): IrenaResult => {
   const extractor = 'irena-rpgc'
   const unparsed: Unparsed[] = []
   const observations: ObservationRow[] = []
-  const held = new Map<string, number>()
   const bess: { as_of: string; value: number; row: CsvRow }[] = []
-  let excluded = 0
+  const excluded = 0
 
   for (const row of rows) {
     const problem = validate(row)
@@ -123,17 +114,6 @@ export const extractIrenaRpgc = (rows: CsvRow[]): IrenaResult => {
 
     const technology = (row.technology ?? '').trim()
     const metric = (row.metric ?? '').trim()
-    const dependency = DEPENDENCY_ALIAS.get(aliasKey(technology, metric))
-
-    // No dependency -> the row cannot be stored: metric_observations.dependency_id is a NOT
-    // NULL foreign key. Held, counted and named -- NOT quietly dropped, and NOT force-fitted by
-    // inventing a dependency row, which is exactly the technology/dependency conflation the
-    // split spec exists to correct.
-    if (dependency === undefined) {
-      excluded += 1
-      held.set(`${technology} / ${metric}`, (held.get(`${technology} / ${metric}`) ?? 0) + 1)
-      continue
-    }
 
     const scope = SCOPE.get((row.scope ?? '').trim().toLowerCase()) as string
     const as_of = (row.as_of ?? '').trim()
@@ -147,11 +127,15 @@ export const extractIrenaRpgc = (rows: CsvRow[]): IrenaResult => {
     }
 
     observations.push({
-      dependency_name: dependency,
+      // The published technology name, straight through. Nothing is held back any more:
+      // whether a dependency hangs off this entity is dependency_links' business, not a
+      // precondition for storing the observation.
+      entity_name: technology,
       metric,
       value: (row.value ?? '').trim(),
       unit: (row.unit ?? '').trim(),
-      basis: (row.basis ?? '').trim(),
+      basis: (row.basis ?? '').trim() || 'na',
+      ...basisFor(metric),
       segment: (row.segment ?? '').trim() || 'all',
       as_of,
       scope,
@@ -165,7 +149,6 @@ export const extractIrenaRpgc = (rows: CsvRow[]): IrenaResult => {
   return {
     observations: { rows: observations, unparsed, excluded },
     capacity: { rows: cumulateBess(bess), unparsed: [], excluded: 0 },
-    held,
   }
 }
 
@@ -174,11 +157,13 @@ export const extractIrenaRpgc = (rows: CsvRow[]): IrenaResult => {
 // year. Recording what this one measures on every row is what stops a later reader splicing
 // them into one curve.
 //
-// NOTE (spec conflict, deliberately not silently resolved): data-derivation-map.md asks for
-// `basis usable_kWh / duration blended`, but `basis` already means the CURRENCY basis
-// (real_2025_usd vs nominal) and that meaning is load-bearing -- one column cannot carry both.
-// The qualifiers ride in `note` until a `duration` / `measurement_basis` column is added.
-const IRENA_TIC_NOTE = 'IRENA total installed cost; usable kWh; blended duration (1.4-4.3h)'
+// The measurement qualifiers used to ride in this note string, because `basis` already meant
+// the currency and one column could not carry both. The three-way split gave them real
+// columns, so they now live in energy_basis/duration where the progress join can ENFORCE them
+// (see basisFor below) rather than merely record them. What stays in the note is the part
+// that is genuine provenance rather than a misfiled column: the interchangeability warning.
+const IRENA_TIC_NOTE =
+  'IRENA total installed cost; not interchangeable with BNEF pack, BNEF turnkey or Ember all-in'
 
 const noteFor = (metric: string, existing: string): string => {
   if (metric !== BATTERY_COST_METRIC) {
@@ -186,6 +171,15 @@ const noteFor = (metric: string, existing: string): string => {
   }
   return existing ? `${IRENA_TIC_NOTE}; ${existing}` : IRENA_TIC_NOTE
 }
+
+// IRENA's battery installed cost is quoted per USABLE kWh over a mixed-duration fleet
+// (1.4-4.3h). Both facts are now equality-join keys: a bar declared per nameplate kWh, or on a
+// straight 4h system, no longer silently joins these observations. Every other metric in this
+// source is a per-kW or per-MWh figure with neither axis, hence 'na'.
+const basisFor = (metric: string): { energy_basis: string; duration: string } =>
+  metric === BATTERY_COST_METRIC
+    ? { energy_basis: 'usable', duration: 'blended' }
+    : { energy_basis: 'na', duration: 'na' }
 
 // Annual additions -> a running total. Two things a reader has to be told, both recorded on the
 // rows themselves rather than in a comment nobody reads at query time:
@@ -205,11 +199,18 @@ const cumulateBess = (points: { as_of: string; value: number; row: CsvRow }[]): 
   return sorted.map((point, index) => {
     total += point.value
     return {
-      technology: 'Utility-scale battery system',
+      // The publisher's own string, verbatim. Mapping it to a tidier name would be a new
+      // alias map, which is precisely what the split just deleted.
+      entity_name: 'Lithium-ion battery cost',
       metric: BESS_CAPACITY_METRIC,
       value: fixed(total, BESS_PRECISION),
       unit: 'GWh',
-      basis: 'energy',
+      // basis was 'energy' here, which was just restating the unit. A cumulative GWh figure
+      // has no currency, no nameplate/usable distinction and no duration.
+      basis: 'na',
+      energy_basis: 'na',
+      duration: 'na',
+      segment: 'all',
       as_of: point.as_of,
       scope: 'global',
       scenario: 'historical',

@@ -58,7 +58,7 @@ export const extractCitedAnchors = (rows: CsvRow[]): ExtractResult<ObservationRo
   const kept: ObservationRow[] = []
 
   for (const row of rows) {
-    const problem = validate(row, OBSERVATION_COLUMNS, 'dependency_name')
+    const problem = validate(row, OBSERVATION_COLUMNS, 'entity_name')
     if (problem) {
       unparsed.push({ extractor, raw: JSON.stringify(row), reason: problem })
       continue
@@ -75,7 +75,7 @@ export const extractCapacityAnchors = (rows: CsvRow[]): ExtractResult<CapacityRo
   const kept: CapacityRow[] = []
 
   for (const row of rows) {
-    const problem = validate(row, CAPACITY_COLUMNS, 'technology')
+    const problem = validate(row, CAPACITY_COLUMNS, 'entity_name')
     if (problem) {
       unparsed.push({ extractor, raw: JSON.stringify(row), reason: problem })
       continue

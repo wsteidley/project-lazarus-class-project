@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { computeProjections, type ProgressPoint } from './projection.js'
 
 const point = (as_of: string, progress: number | null): ProgressPoint => ({
-  dependency_id: 1,
+  entity_id: 1,
   metric: 'm',
   scope: 'global',
   segment: 'all',

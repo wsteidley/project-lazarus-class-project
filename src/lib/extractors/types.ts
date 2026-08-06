@@ -11,15 +11,23 @@
 //
 // `segment` is the slice the value covers: 'all' is the rolled-up total, and
 // on_grid/off_grid/onshore/offshore are its parts. Never sum a total together with its own
-// parts — read either the 'all' row or the parts, never both. It is a separate column from
-// `basis` because it says WHICH SUBSET was measured, where basis says HOW it was measured
-// (constant vs nominal dollars, DC vs AC); onshore wind in 2025 dollars needs both.
+// parts — read either the 'all' row or the parts, never both. It says WHICH SUBSET was
+// measured, where the basis triple says HOW it was measured.
+//
+// That triple — `basis` (currency vintage), `energy_basis` (which kWh the denominator counts),
+// `duration` (which storage duration a $/kWh refers to) — was one overloaded `basis` column
+// until this split. It carried a currency on cost rows, a DC/AC denominator on solar capacity,
+// a segment on wind capacity and a unit on battery capacity, all at once. Three orthogonal
+// facts cannot share one string, and the cost of pretending otherwise is a viability verdict
+// computed across mismatched measurements without anything erroring.
 export type ObservationRow = {
-  dependency_name: string
+  entity_name: string
   metric: string
   value: string
   unit: string
   basis: string
+  energy_basis: string
+  duration: string
   segment: string
   as_of: string
   scope: string
@@ -29,15 +37,23 @@ export type ObservationRow = {
   note: string
 }
 
-// One point on a cumulative-deployment curve, for the Wright/learning-rate fit. Keyed by
-// technology rather than dependency because a capacity curve belongs to the technology,
-// and `scenario` distinguishes observed history from any projected extension.
+// One point on a cumulative-deployment curve, for the Wright/learning-rate fit. Keyed by the
+// reference entity, same as observations: a capacity curve belongs to the technology, and
+// `scenario` distinguishes observed history from any projected extension. This column was
+// `technology` while observations said `dependency_name`; the split made them genuinely the
+// same key, so the loader's aliasing hack could go.
+//
+// `segment` is new here and was the reason 25 wind rows had basis='onshore': there was
+// nowhere else for the slice to go.
 export type CapacityRow = {
-  technology: string
+  entity_name: string
   metric: string
   value: string
   unit: string
   basis: string
+  energy_basis: string
+  duration: string
+  segment: string
   as_of: string
   scope: string
   scenario: string
@@ -48,11 +64,13 @@ export type CapacityRow = {
 }
 
 export const OBSERVATION_COLUMNS: (keyof ObservationRow)[] = [
-  'dependency_name',
+  'entity_name',
   'metric',
   'value',
   'unit',
   'basis',
+  'energy_basis',
+  'duration',
   'segment',
   'as_of',
   'scope',
@@ -63,11 +81,14 @@ export const OBSERVATION_COLUMNS: (keyof ObservationRow)[] = [
 ]
 
 export const CAPACITY_COLUMNS: (keyof CapacityRow)[] = [
-  'technology',
+  'entity_name',
   'metric',
   'value',
   'unit',
   'basis',
+  'energy_basis',
+  'duration',
+  'segment',
   'as_of',
   'scope',
   'scenario',
@@ -112,8 +133,34 @@ const by =
     return 0
   }
 
+// Sort keys are the row's identity, not a subset of it: the basis triple is part of what makes
+// a series a series, so two rows differing only in currency must order deterministically
+// rather than by input arrival. Without that the derived file's byte-for-byte audit
+// (README: rm data/derived && rebuild && git diff) would report spurious churn.
 export const sortObservations = (rows: ObservationRow[]): ObservationRow[] =>
-  [...rows].sort(by<ObservationRow>(['dependency_name', 'metric', 'segment', 'scope', 'as_of']))
+  [...rows].sort(
+    by<ObservationRow>([
+      'entity_name',
+      'metric',
+      'segment',
+      'scope',
+      'basis',
+      'energy_basis',
+      'duration',
+      'as_of',
+    ]),
+  )
 
 export const sortCapacity = (rows: CapacityRow[]): CapacityRow[] =>
-  [...rows].sort(by<CapacityRow>(['technology', 'metric', 'scope', 'as_of']))
+  [...rows].sort(
+    by<CapacityRow>([
+      'entity_name',
+      'metric',
+      'segment',
+      'scope',
+      'basis',
+      'energy_basis',
+      'duration',
+      'as_of',
+    ]),
+  )

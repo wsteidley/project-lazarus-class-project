@@ -19,12 +19,15 @@ const emptyInputs = (): LoadInputs => ({
   fundingRounds: [],
   challenges: [],
   dependencies: [],
+  referenceEntities: [],
+  dependencyLinks: [],
+  searchCoverage: [],
   thresholds: [],
   companyDependencies: [],
   assessments: [],
   metricObservations: [],
   capacitySeries: [],
-  dependencyLinks: [],
+  dependencyEdges: [],
   rawDocuments: [],
 })
 

@@ -24,7 +24,7 @@ const syntheticSeries = (options: {
     costPoints.push({ as_of: `${year}-12`, value: cost })
   }
   return {
-    dependency_id: 1,
+    entity_id: 1,
     metric: 'module price',
     scope: 'global',
     segment: 'all',
@@ -176,7 +176,7 @@ describe('computeWrightProjections guards (these are today’s real data, not hy
   it('reports every skip with its series key, so the caller can log the fallback', () => {
     const thin: WrightSeries = { ...base, costPoints: base.costPoints.slice(0, 2) }
     const { skipped } = computeWrightProjections([thin])
-    expect(skipped[0]).toMatchObject({ dependency_id: 1, metric: 'module price', scope: 'global' })
+    expect(skipped[0]).toMatchObject({ entity_id: 1, metric: 'module price', scope: 'global' })
   })
 
   // The case onshore wind and battery actually hit: a real, well-evidenced learning curve on a

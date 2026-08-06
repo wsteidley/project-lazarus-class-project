@@ -111,8 +111,34 @@ relative to it?).
   market, policy) with their own plottable series — the "charging network" idea. The
   generic link is the only thing needed now to keep it a pure addition later.
 
+## Corrections made on build (2026-08-04)
+
+- **`dependency_links` carries NO `threshold_value`/`threshold_unit`.** The DDL above
+  predates `dependency_thresholds` v2, which already owns bars *with* contested/alt/
+  baseline/policy_dependent and now the basis triple. Two stored homes for "the bar" means
+  a viability call cannot say which one it used — a P4 violation. The link carries `era`
+  and a note; the bar stays where it is.
+- **`dependencies.name` must be `UNIQUE`.** `dependency_links.dependency_name` references
+  it, and SQLite with `PRAGMA foreign_keys = ON` raises `foreign key mismatch` when a FK's
+  parent key is not unique. Names were already de-facto unique.
+- **The existing causal `dependency_links` was renamed `dependency_edges`** so this spec's
+  table could take the name. They are different relations (dependency→dependency causality
+  vs dependency→entity slice) and must never be conflated again.
+- **`qualitative_blocker` is link-absence AND `threshold_kind='qualitative'`, not
+  link-absence alone.** A dependency can lack a link because it is non-measurable by
+  nature, or because nobody has sourced a curve yet. Those are different answers, and
+  calling the second one qualitative would quietly write off work still worth doing.
+
+## Resolved
+- **Metric tables key on `entity_id` → `reference_entities`**, not a `technology` text
+  column. Kind-agnostic, so a later `kind='infrastructure'` entity is an insert, not a
+  migration. `metric_projections` keeps *both* keys (entity = whose curve, nullable
+  dependency = whose bar); `wright_fits` is entity-only, because a learning rate is a
+  property of the curve.
+
 ## Still open
-- Whether metric tables key directly on `technology` or on `reference_entities` filtered
-  to `kind='technology'` — same result; pick per implementation simplicity.
 - Whether `era` on the link is a year, a range, or ties to an idea-space failure cohort
-  (the deeper "baseline from failure era" idea, still a query-time lens).
+  (the deeper "baseline from failure era" idea, still a query-time lens). Shipped as a
+  free-text year **carried on the gap cell but unused in the classification** —
+  `lazarus_candidate` compares `became_viable_date` to `companies.year_defunct`, a fact
+  about the company rather than a curated slice.

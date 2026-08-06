@@ -1,9 +1,10 @@
 import type { DatabaseSync } from 'node:sqlite'
 import { SECTOR } from '../schemas.js'
+import { assertNoBasisMismatches } from './basis.js'
 import type { CsvRow } from './csv.js'
 import type { RawDocument } from './raw-documents.js'
 import {
-  validateDependencyLinks,
+  validateDependencyEdges,
   validateObservationRows,
   validateThresholds,
 } from './thresholds.js'
@@ -26,12 +27,15 @@ export type LoadInputs = {
   fundingRounds: CsvRow[]
   challenges: CsvRow[]
   dependencies: CsvRow[]
+  referenceEntities: CsvRow[]
+  dependencyLinks: CsvRow[]
+  searchCoverage: CsvRow[]
   thresholds: CsvRow[]
   companyDependencies: CsvRow[]
   assessments: CsvRow[]
   metricObservations: CsvRow[]
   capacitySeries: CsvRow[]
-  dependencyLinks: CsvRow[]
+  dependencyEdges: CsvRow[]
   rawDocuments: RawDocument[]
 }
 
@@ -39,7 +43,10 @@ export type LoadReport = {
   thresholdsInserted: number
   observationsInserted: number
   capacityInserted: number
+  edgesInserted: number
+  entitiesInserted: number
   linksInserted: number
+  coverageInserted: number
   companyDependenciesRetained: number
   companyDependenciesUnresolved: number
   // Per-table tally of rows that could not be inserted, keyed `table: reason`. Deliberately
@@ -264,6 +271,45 @@ export const loadDatabase = (db: DatabaseSync, inputs: LoadInputs): LoadReport =
     }
   }
 
+  // reference_entities: the data-bearing subjects. Curated seed, loaded before anything that
+  // keys on them. name -> id.
+  const insertEntity = db.prepare(
+    'INSERT INTO reference_entities (name, kind, note) VALUES (?, ?, ?)',
+  )
+  const entityIdByName = new Map<string, number>()
+  for (const row of inputs.referenceEntities) {
+    const name = toText(row.name)
+    if (name === null) {
+      skip('reference_entities', 'empty name')
+      continue
+    }
+    const info = insertEntity.run(name, toText(row.kind) ?? 'technology', toText(row.note))
+    entityIdByName.set(name, Number(info.lastInsertRowid))
+  }
+  let entitiesInserted = entityIdByName.size
+
+  // dependency_links: dependency -> entity, carrying the era slice. A dependency with no row
+  // here is standalone/qualitative and that is a first-class state, not a load failure —
+  // which is the whole point of the split (P2).
+  const insertDependencyLink = db.prepare(
+    'INSERT OR IGNORE INTO dependency_links (dependency_name, entity_id, era, note) VALUES (?, ?, ?, ?)',
+  )
+  let linksInserted = 0
+  for (const row of inputs.dependencyLinks) {
+    const dependencyName = toText(row.dependency_name) ?? ''
+    const entityId = entityIdByName.get(toText(row.entity_name) ?? '')
+    if (!dependencyIdByName.has(dependencyName)) {
+      skip('dependency_links', `unknown dependency "${dependencyName}"`)
+      continue
+    }
+    if (entityId === undefined) {
+      skip('dependency_links', `unknown entity "${row.entity_name ?? ''}"`)
+      continue
+    }
+    insertDependencyLink.run(dependencyName, entityId, toText(row.era), toText(row.note))
+    linksInserted += 1
+  }
+
   // dependency_thresholds: one bar per (dependency, metric, scope). Validate names against
   // the seed (report, don't drop) and enforce that a quantitative_with_threshold dependency
   // actually carries a complete bar.
@@ -286,8 +332,9 @@ export const loadDatabase = (db: DatabaseSync, inputs: LoadInputs): LoadReport =
       (dependency_id, metric, scope, threshold_value, threshold_unit, threshold_direction,
        threshold_source_url, threshold_as_of, threshold_note, threshold_contested,
        threshold_alt_value, threshold_alt_source_url, threshold_contested_note,
-       policy_dependent, baseline_value, baseline_as_of, baseline_note)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       policy_dependent, baseline_value, baseline_as_of, baseline_note,
+       basis, energy_basis, duration)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   )
   let thresholdsInserted = 0
   for (const row of resolvedThresholds) {
@@ -314,6 +361,11 @@ export const loadDatabase = (db: DatabaseSync, inputs: LoadInputs): LoadReport =
       toReal(row.baseline_value),
       toText(row.baseline_as_of),
       toText(row.baseline_note),
+      // 'na' rather than null: these are equality-join keys and NULL never equals NULL, so an
+      // unstamped bar must fall back to the value that matches an unstamped series.
+      toText(row.basis) ?? 'na',
+      toText(row.energy_basis) ?? 'na',
+      toText(row.duration) ?? 'na',
     )
     thresholdsInserted += 1
   }
@@ -394,40 +446,43 @@ export const loadDatabase = (db: DatabaseSync, inputs: LoadInputs): LoadReport =
   // metric_observations: curated dated facts. Resolve dependency_name -> id via the same
   // map, and reuse matchCanonical (via validateObservationRows) so an unresolvable name or a
   // curated row without a source is reported, not silently dropped. Append-only table.
+  const entityNames = [...entityIdByName.keys()]
   const {
     resolved: resolvedObservations,
     unmatched: unmatchedObservations,
     missingSource,
-  } = validateObservationRows(inputs.metricObservations, canonicalNames)
+  } = validateObservationRows(inputs.metricObservations, entityNames)
   for (const row of unmatchedObservations) {
     console.warn(
-      `  metric_observation dependency_name matched nothing canonical: "${row.dependency_name ?? ''}"`,
+      `  metric_observation entity_name matched nothing canonical: "${row.entity_name ?? ''}"`,
     )
   }
   for (const row of missingSource) {
     console.warn(
-      `  curated metric_observation missing source_url: "${row.dependency_name ?? ''}" ${row.metric ?? ''} ${row.as_of ?? ''}`,
+      `  curated metric_observation missing source_url: "${row.entity_name ?? ''}" ${row.metric ?? ''} ${row.as_of ?? ''}`,
     )
   }
   const insertObservation = db.prepare(
     `INSERT INTO metric_observations
-      (dependency_id, metric, value, unit, basis, segment, as_of, scope, method, source_url,
-       source_name, note)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      (entity_id, metric, value, unit, basis, energy_basis, duration, segment, as_of, scope,
+       method, source_url, source_name, note)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   )
   let observationsInserted = 0
   for (const row of resolvedObservations) {
-    const dependencyId = dependencyIdByName.get(row.dependency_name)
-    if (dependencyId === undefined) {
-      skip('metric_observations', `unknown dependency "${row.dependency_name}"`)
+    const entityId = entityIdByName.get(row.entity_name)
+    if (entityId === undefined) {
+      skip('metric_observations', `unknown entity "${row.entity_name}"`)
       continue
     }
     insertObservation.run(
-      dependencyId,
+      entityId,
       toText(row.metric),
       toReal(row.value),
       toText(row.unit),
-      toText(row.basis),
+      toText(row.basis) ?? 'na',
+      toText(row.energy_basis) ?? 'na',
+      toText(row.duration) ?? 'na',
       // Rows predating the segment column are the rolled-up total by definition.
       toText(row.segment) ?? 'all',
       toText(row.as_of),
@@ -440,42 +495,40 @@ export const loadDatabase = (db: DatabaseSync, inputs: LoadInputs): LoadReport =
     observationsInserted += 1
   }
 
-  // capacity_series: cumulative deployment per technology, the x-axis of the Wright fit.
-  // `technology` names a canonical dependency, so it resolves through the same map and the
-  // same report-not-drop validator — validateObservationRows keys on `dependency_name`, so
-  // the column is aliased rather than the validator duplicated.
-  const capacityRows = inputs.capacitySeries.map((row) => ({
-    ...row,
-    dependency_name: row.technology ?? '',
-  }))
+  // capacity_series: cumulative deployment per entity, the x-axis of the Wright fit. Both row
+  // types genuinely share `entity_name` since the split, so the old alias hack (copying
+  // `technology` into `dependency_name` to reuse the validator) is gone.
   const { resolved: resolvedCapacity, unmatched: unmatchedCapacity } = validateObservationRows(
-    capacityRows,
-    canonicalNames,
+    inputs.capacitySeries,
+    entityNames,
   )
   for (const row of unmatchedCapacity) {
     console.warn(
-      `  capacity_series technology matched nothing canonical: "${row.technology ?? ''}"`,
+      `  capacity_series entity_name matched nothing canonical: "${row.entity_name ?? ''}"`,
     )
   }
   const insertCapacity = db.prepare(
     `INSERT INTO capacity_series
-      (dependency_id, metric, value, unit, basis, as_of, scope, scenario, method, source_url,
-       source_name, note)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      (entity_id, metric, value, unit, basis, energy_basis, duration, segment, as_of, scope,
+       scenario, method, source_url, source_name, note)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   )
   let capacityInserted = 0
   for (const row of resolvedCapacity) {
-    const dependencyId = dependencyIdByName.get(row.dependency_name)
-    if (dependencyId === undefined) {
-      skip('capacity_series', `unknown technology "${row.dependency_name}"`)
+    const entityId = entityIdByName.get(row.entity_name)
+    if (entityId === undefined) {
+      skip('capacity_series', `unknown entity "${row.entity_name}"`)
       continue
     }
     insertCapacity.run(
-      dependencyId,
+      entityId,
       toText(row.metric),
       toReal(row.value),
       toText(row.unit),
-      toText(row.basis),
+      toText(row.basis) ?? 'na',
+      toText(row.energy_basis) ?? 'na',
+      toText(row.duration) ?? 'na',
+      toText(row.segment) ?? 'all',
       toText(row.as_of),
       toText(row.scope),
       toText(row.scenario),
@@ -487,30 +540,96 @@ export const loadDatabase = (db: DatabaseSync, inputs: LoadInputs): LoadReport =
     capacityInserted += 1
   }
 
-  // dependency_links: causal edges between dependencies. Both endpoints must resolve.
-  const { resolved: resolvedLinks, unmatched: unmatchedLinks } = validateDependencyLinks(
-    inputs.dependencyLinks,
+  // Baseline rule #1, enforced. Runs here because both sides are now loaded and nothing has
+  // read a view yet — the progress join would otherwise silently return zero rows for a
+  // mismatched pair, which is indistinguishable from having no data at all. See lib/basis.ts
+  // for why this is the one place the pipeline hard-fails rather than reporting.
+  //
+  // A bar reaches its series through dependency_links, so an unlinked dependency contributes
+  // no pair to check — correct, since there is no series it could disagree with.
+  const entityNameForDependency = new Map<string, string>()
+  for (const row of inputs.dependencyLinks) {
+    const dependencyName = toText(row.dependency_name)
+    const entityName = toText(row.entity_name)
+    if (dependencyName !== null && entityName !== null && entityIdByName.has(entityName)) {
+      entityNameForDependency.set(dependencyName, entityName)
+    }
+  }
+  assertNoBasisMismatches(
+    resolvedThresholds.flatMap((row) => {
+      const entityName = entityNameForDependency.get(row.dependency_name)
+      return entityName === undefined
+        ? []
+        : [
+            {
+              dependency_name: row.dependency_name,
+              entity_name: entityName,
+              metric: row.metric ?? '',
+              scope: row.scope ?? '',
+              basis: row.basis ?? 'na',
+              energy_basis: row.energy_basis ?? 'na',
+              duration: row.duration ?? 'na',
+            },
+          ]
+    }),
+    resolvedObservations,
+  )
+
+  // dependency_edges: causal edges between dependencies. Both endpoints must resolve.
+  const { resolved: resolvedEdges, unmatched: unmatchedEdges } = validateDependencyEdges(
+    inputs.dependencyEdges,
     canonicalNames,
   )
-  for (const row of unmatchedLinks) {
+  for (const row of unmatchedEdges) {
     console.warn(
-      `  dependency_link endpoint matched nothing canonical: "${row.from_dependency ?? ''}" -> "${row.to_dependency ?? ''}"`,
+      `  dependency_edge endpoint matched nothing canonical: "${row.from_dependency ?? ''}" -> "${row.to_dependency ?? ''}"`,
     )
   }
-  const insertLink = db.prepare(
-    `INSERT INTO dependency_links (from_dependency_id, to_dependency_id, relation, note)
+  const insertEdge = db.prepare(
+    `INSERT INTO dependency_edges (from_dependency_id, to_dependency_id, relation, note)
      VALUES (?, ?, ?, ?)`,
   )
-  let linksInserted = 0
-  for (const link of resolvedLinks) {
+  let edgesInserted = 0
+  for (const link of resolvedEdges) {
     const fromId = dependencyIdByName.get(link.from_dependency)
     const toId = dependencyIdByName.get(link.to_dependency)
     if (fromId === undefined || toId === undefined) {
-      skip('dependency_links', 'unresolved endpoint')
+      skip('dependency_edges', 'unresolved endpoint')
       continue
     }
-    insertLink.run(fromId, toId, link.relation, toText(link.note))
-    linksInserted += 1
+    insertEdge.run(fromId, toId, link.relation, toText(link.note))
+    edgesInserted += 1
+  }
+
+  // search_coverage: the record of what was actually searched. Deliberately loaded even when
+  // empty — an empty table is a meaningful state (nothing is confirmed swept, so every empty
+  // region reads 'unsampled'), not a missing input.
+  const insertCoverage = db.prepare(
+    `INSERT INTO search_coverage
+      (idea_space_name, dependency_name, searched_on, source, method, note)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+  )
+  let coverageInserted = 0
+  for (const row of inputs.searchCoverage) {
+    const ideaSpace = toText(row.idea_space_name)
+    if (ideaSpace === null || !ideaSpaceIdByName.has(ideaSpace)) {
+      skip('search_coverage', `unknown idea_space "${row.idea_space_name ?? ''}"`)
+      continue
+    }
+    const dependencyName = toText(row.dependency_name)
+    if (dependencyName !== null && !dependencyIdByName.has(dependencyName)) {
+      skip('search_coverage', `unknown dependency "${dependencyName}"`)
+      continue
+    }
+    insertCoverage.run(
+      ideaSpace,
+      dependencyName,
+      toText(row.searched_on) ?? '',
+      toText(row.source) ?? '',
+      toText(row.method) ?? 'curated',
+      toText(row.note),
+    )
+    coverageInserted += 1
   }
 
   // trajectory_config: seed the one tunable row the trajectory view cross-joins against.
@@ -538,7 +657,10 @@ export const loadDatabase = (db: DatabaseSync, inputs: LoadInputs): LoadReport =
     thresholdsInserted,
     observationsInserted,
     capacityInserted,
+    edgesInserted,
+    entitiesInserted,
     linksInserted,
+    coverageInserted,
     companyDependenciesRetained,
     companyDependenciesUnresolved,
     skipped,

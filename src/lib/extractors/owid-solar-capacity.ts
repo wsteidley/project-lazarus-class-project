@@ -6,7 +6,7 @@ import { type CapacityRow, type ExtractResult, fixed, yearAsOf } from './types.j
 // learning-rate (Wright) fit is run against.
 // Source: data/sources/owid/installed-solar-pv-capacity/installed-solar-pv-capacity.csv
 
-export const TECHNOLOGY = 'Solar module cost'
+export const ENTITY_NAME = 'Solar PV'
 export const METRIC = 'cumulative solar PV capacity'
 export const VALUE_COLUMN = 'Solar'
 export const SOURCE_URL = 'https://ourworldindata.org/grapher/installed-solar-pv-capacity'
@@ -16,7 +16,14 @@ export const UNIT = 'GW'
 // AC, not DC. REN21/GSR/Statista headline capacity figures are DC and run ~20% higher
 // post-2021; pairing a DC capacity series with the AC-consistent cost series would bend
 // the learning rate. The cost source is AC, so this is too. See DATA_SOURCES.md.
-export const BASIS = 'AC'
+//
+// This rode in `basis` until the three-way split, where it was the clearest case of the
+// conflation: AC-vs-DC is an ENERGY denominator, never a currency.
+export const ENERGY_BASIS = 'AC'
+// A capacity figure has no currency vintage.
+export const BASIS = 'na'
+export const DURATION = 'na'
+export const SEGMENT = 'all'
 
 // OWID's series starts in 2000. Earlier years exist in other compilations but not on a
 // consistent basis, so the fit starts where this file does.
@@ -31,11 +38,14 @@ export const extractOwidSolarCapacity = (rows: CsvRow[]): ExtractResult<Capacity
   const latestYear = Math.max(...years)
 
   const capacity = points.map<CapacityRow>((point) => ({
-    technology: TECHNOLOGY,
+    entity_name: ENTITY_NAME,
     metric: METRIC,
     value: fixed(point.value, PRECISION),
     unit: UNIT,
     basis: BASIS,
+    energy_basis: ENERGY_BASIS,
+    duration: DURATION,
+    segment: SEGMENT,
     as_of: yearAsOf(point.year),
     scope: 'global',
     scenario: 'historical',

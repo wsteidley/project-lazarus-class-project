@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { CsvRow } from './csv.js'
 import {
-  validateDependencyLinks,
+  validateDependencyEdges,
   validateObservationRows,
   validateThresholds,
 } from './thresholds.js'
@@ -9,28 +9,28 @@ import {
 const CANONICAL = ['Lithium-ion battery cost', 'Carbon price', 'Grid interconnection capacity']
 
 describe('validateObservationRows', () => {
-  it('resolves dependency_name to the canonical spelling, tolerating case/whitespace', () => {
+  it('resolves entity_name to the canonical spelling, tolerating case/whitespace', () => {
     const rows: CsvRow[] = [
-      { dependency_name: '  lithium-ion  battery cost ', metric: 'x', method: 'feed' },
+      { entity_name: '  lithium-ion  battery cost ', metric: 'x', method: 'feed' },
     ]
     const { resolved, unmatched } = validateObservationRows(rows, CANONICAL)
-    expect(resolved[0]?.dependency_name).toBe('Lithium-ion battery cost')
+    expect(resolved[0]?.entity_name).toBe('Lithium-ion battery cost')
     expect(unmatched).toHaveLength(0)
   })
 
-  it('reports unmatched dependency_name rather than dropping it', () => {
-    const rows: CsvRow[] = [{ dependency_name: 'Fusion power cost', metric: 'x', method: 'feed' }]
+  it('reports unmatched entity_name rather than dropping it', () => {
+    const rows: CsvRow[] = [{ entity_name: 'Fusion power cost', metric: 'x', method: 'feed' }]
     const { resolved, unmatched } = validateObservationRows(rows, CANONICAL)
     expect(resolved).toHaveLength(1)
-    expect(resolved[0]?.dependency_name).toBe('')
+    expect(resolved[0]?.entity_name).toBe('')
     expect(unmatched).toHaveLength(1)
   })
 
   it('flags a curated row missing a source_url', () => {
     const rows: CsvRow[] = [
-      { dependency_name: 'Carbon price', method: 'curated', source_url: '' },
-      { dependency_name: 'Carbon price', method: 'curated', source_url: 'https://example.org' },
-      { dependency_name: 'Carbon price', method: 'feed', source_url: '' },
+      { entity_name: 'Carbon price', method: 'curated', source_url: '' },
+      { entity_name: 'Carbon price', method: 'curated', source_url: 'https://example.org' },
+      { entity_name: 'Carbon price', method: 'feed', source_url: '' },
     ]
     const { missingSource } = validateObservationRows(rows, CANONICAL)
     expect(missingSource).toHaveLength(1)
@@ -90,7 +90,7 @@ describe('validateThresholds', () => {
   })
 })
 
-describe('validateDependencyLinks', () => {
+describe('validateDependencyEdges', () => {
   it('resolves both endpoints and reports links with an unresolvable end', () => {
     const rows: CsvRow[] = [
       {
@@ -106,7 +106,7 @@ describe('validateDependencyLinks', () => {
         note: '',
       },
     ]
-    const { resolved, unmatched } = validateDependencyLinks(rows, CANONICAL)
+    const { resolved, unmatched } = validateDependencyEdges(rows, CANONICAL)
     expect(resolved).toHaveLength(1)
     expect(resolved[0]?.from_dependency).toBe('Grid interconnection capacity')
     expect(unmatched).toHaveLength(1)

@@ -194,6 +194,40 @@ Switch providers by setting `PROVIDER=ollama` (runs locally, no rate limits). Th
 query the DB, e.g. the core comparison — who overcame a challenge that killed
 others: `SELECT category, SUM(outcome='fatal') killed, SUM(outcome='overcome') overcame FROM challenges GROUP BY category`.
 
+### The gap map
+
+`gap_map` is the headline surface: every company × blocker pairing classified, plus the
+blank regions. The point is that a gap and a verdict are the same query shape — asking what
+we *can't* say is no harder than asking what we can, and is usually more useful, because
+that's where your own knowledge does work the data can't.
+
+```sql
+-- the whole space at a glance, blanks included
+SELECT cell, COUNT(*) FROM gap_map GROUP BY cell ORDER BY 2 DESC;
+
+-- the finding the dataset exists for: blocker cleared its bar AFTER the company died
+SELECT company_name, dependency_label, became_viable_date, year_defunct
+FROM gap_cells WHERE cell = 'lazarus_candidate';
+
+-- the highest-value gap: companies whose blocker we have no data on at all
+SELECT company_name, dependency_label FROM gap_map WHERE cell = 'no_blocker_data';
+
+-- ideas you could reassess with your own data
+SELECT * FROM gap_map
+WHERE cell IN ('no_blocker_data', 'unassessed', 'qualitative_blocker');
+
+-- every viability call with the argument behind it (P4) — disagree with the bar, not just
+-- the verdict
+SELECT company_name, dependency_label, cell, entity_name, metric,
+       basis, energy_basis, duration, threshold_value, threshold_as_of, threshold_source_url
+FROM gap_cells WHERE cell = 'lazarus_candidate';
+```
+
+`unsampled` and `white_space` never collapse: a region is `white_space` (searched, genuinely
+empty) only where `search_coverage` records that someone looked. Everything else is
+`unsampled`, and `search_coverage` is seeded empty today — so most blank regions correctly
+read "we haven't looked", not "there's nothing there".
+
 ### Metric data (`build-metric-data`) — requires uv
 
 `build-metric-data` regenerates `data/derived/**` from the raw provider files in
@@ -205,7 +239,10 @@ that is what makes them auditable:
 $ rm -f data/derived/*.csv && npm run build-metric-data && git diff
 ```
 
-An empty diff proves every committed number reproduces from the committed raw sources. To
+An empty diff proves every committed number reproduces from the committed raw sources. Run it
+**twice** after any change to the row shape or the sort keys: the first run shows the expected
+one-time content change, the second must be empty, which is what proves the new ordering is
+stable rather than input-order dependent. To
 change a number, change its source — a provider file under `data/sources/<provider>/`, or
 `data/curated/cited_anchors.csv` for paywalled/cited-only figures — then re-run and review
 the diff. Never edit `data/derived/` by hand.

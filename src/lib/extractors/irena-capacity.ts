@@ -10,7 +10,7 @@ import { type CapacityRow, type ExtractResult, fixed, yearAsOf } from './types.j
 // "All types" gotcha is handled on the Python side, where the raw rows are — see the
 // note in irena_capacity.py and in DATA_SOURCES.md.
 
-export const TECHNOLOGY = 'Onshore wind LCOE'
+export const ENTITY_NAME = 'Onshore wind'
 export const METRIC = 'cumulative onshore wind capacity'
 export const SOURCE_URL = 'https://www.irena.org/Data'
 export const SOURCE_NAME = 'IRENA Renewable Capacity Statistics 2025 (IRENA_Stats_Tool_v2)'
@@ -18,7 +18,14 @@ export const UNIT = 'GW'
 
 // Onshore only. IRENA's headline "Wind" total folds in offshore, which has its own cost
 // curve and its own learning rate; fitting the two together contaminates both.
-export const BASIS = 'onshore'
+//
+// This rode in `basis` until the three-way split purely because capacity_series had no
+// `segment` column to put it in. It was never a basis of any kind -- it names WHICH SUBSET
+// was measured, which is the definition of a segment.
+export const SEGMENT = 'onshore'
+export const BASIS = 'na'
+export const ENERGY_BASIS = 'na'
+export const DURATION = 'na'
 
 // IRENA reports MW; the series is published in GW. Dividing by 1000 makes three decimals
 // the natural precision — it is the MW figure, not a rounding choice.
@@ -57,11 +64,14 @@ export const extractIrenaCapacity = (rows: CsvRow[]): ExtractResult<CapacityRow>
   const latestYear = Math.max(...years)
 
   const capacity = points.map<CapacityRow>((point) => ({
-    technology: TECHNOLOGY,
+    entity_name: ENTITY_NAME,
     metric: METRIC,
     value: fixed(point.megawatts / MW_PER_GW, PRECISION),
     unit: UNIT,
     basis: BASIS,
+    energy_basis: ENERGY_BASIS,
+    duration: DURATION,
+    segment: SEGMENT,
     as_of: yearAsOf(point.year),
     scope: 'global',
     scenario: 'historical',

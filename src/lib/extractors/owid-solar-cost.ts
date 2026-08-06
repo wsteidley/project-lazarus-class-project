@@ -5,7 +5,7 @@ import { type ExtractResult, fixed, type ObservationRow, yearAsOf } from './type
 // OWID "Solar photovoltaic panel prices" -> solar module cost observations.
 // Source: data/sources/owid/solar-pv-prices/solar-pv-prices.csv
 
-export const DEPENDENCY_NAME = 'Solar module cost'
+export const ENTITY_NAME = 'Solar PV'
 export const METRIC = 'module price'
 export const VALUE_COLUMN = 'Solar PV module cost'
 export const SOURCE_URL = 'https://ourworldindata.org/grapher/solar-pv-prices'
@@ -14,6 +14,10 @@ export const SOURCE_URL = 'https://ourworldindata.org/grapher/solar-pv-prices'
 // mixed-basis series silently compared against a nominal threshold is the failure this
 // stamp exists to prevent.
 export const BASIS = 'real_2024_usd'
+// A per-watt module price has no energy denominator and no storage duration -- both axes
+// genuinely do not apply, which is what 'na' says. It matches only another 'na'.
+export const ENERGY_BASIS = 'na'
+export const DURATION = 'na'
 export const UNIT = 'USD/W'
 
 // OWID stitches three producers into one series. Attributing every row to "OWID" would
@@ -49,11 +53,13 @@ export const extractOwidSolarCost = (rows: CsvRow[]): ExtractResult<ObservationR
   const latestYear = Math.max(...points.map((point) => point.year))
 
   const observations = points.map<ObservationRow>((point) => ({
-    dependency_name: DEPENDENCY_NAME,
+    entity_name: ENTITY_NAME,
     metric: METRIC,
     value: fixed(point.value, PRECISION),
     unit: UNIT,
     basis: BASIS,
+    energy_basis: ENERGY_BASIS,
+    duration: DURATION,
     // OWID publishes one global module price with no on/off-grid or utility/rooftop split,
     // so the series is the rolled-up total.
     segment: 'all',
